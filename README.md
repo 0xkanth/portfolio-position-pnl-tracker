@@ -12,31 +12,24 @@ Crypto portfolio tracker with FIFO accounting, CQRS pattern, and P&L calculation
 
 ### Design Approach
 
-**FIFO Accounting**: Implemented First-In-First-Out lot matching for cost basis tracking. Each position maintains a queue of acquisition lots, with sells consuming from the oldest first.
+**FIFO Accounting**: First-In-First-Out lot matching for cost basis tracking. Sells consume oldest lots first.
 
-**CQRS Pattern**: Separated write operations (PortfolioService) from read operations (PortfolioQueryService) to optimize each path independently. Writes focus on FIFO matching accuracy; reads leverage pre-computed aggregates for speed.
+**CQRS Pattern**: Separate write (PortfolioService) and read (PortfolioQueryService) paths. Writes handle FIFO matching; reads use pre-computed aggregates.
 
-**Performance Optimization**: Cached realized P&L aggregates enable O(1) queries instead of O(n) summation. Unrealized P&L computed on-demand as prices change frequently.
+**Performance**: Cached realized P&L aggregates for O(1) queries. Unrealized P&L computed on-demand.
 
-**Idempotency**: Trade deduplication via `tradeId` prevents double-processing from network retries or duplicate messages.
+**Idempotency**: `tradeId` prevents duplicate processing.
 
-### Key Assumptions
+### Assumptions
 
-1. **In-Memory Storage Acceptable**: Requirements specified in-memory; data persists for application lifetime. Storage layer abstracted for easy database migration.
-
-2. **Single User**: No authentication or multi-tenancy. Production would add JWT + userId partitioning.
-
-3. **Manual Price Updates**: Prices set via API. Production would integrate WebSocket feeds (Binance/Coinbase).
-
-4. **Floating Point Precision Sufficient**: Using JavaScript `number` type. High-value production systems should use `Decimal.js` for arbitrary precision.
-
-5. **Symbols Pre-Normalized**: Expecting uppercase symbols (BTC, ETH). Production would normalize and validate against exchange symbol lists.
-
-6. **Trade Timestamps Trusted**: Assuming `executionTimestamp` from external system is accurate and not manipulated.
-
-7. **Partial Fills Handled Atomically**: Each trade is a complete execution. Multiple partial fills would be separate trade records.
-
-8. **No Short Positions**: Only long positions tracked. Selling more than owned returns validation error.
+| Assumption | Current | Production |
+|------------|---------|------------|
+| **Storage** | In-memory | PostgreSQL/TimescaleDB |
+| **Users** | Single user | Multi-tenant with JWT auth |
+| **Prices** | Manual API updates | WebSocket feeds (Binance/Coinbase) |
+| **Precision** | JavaScript `number` | `Decimal.js` for >$10M portfolios |
+| **Symbols** | Uppercase (BTC, ETH) | Normalized + validated |
+| **Positions** | Long only | No short selling support |
 
 ### Stack: 
 - NestJS 10 
@@ -136,12 +129,11 @@ erDiagram
     }
 ```
 
-**Key Relationships**:
-- **Position ↔ Symbol**: **ONE Position per symbol** (e.g., one for BTC, one for ETH)
-- **FifoLot ↔ BUY Trade**: **ONE new FifoLot added per BUY trade** (appended to position's queue)
-- **1 Position → N FifoLots**: Each position maintains array of lots from multiple BUY trades
-- **1 SELL Trade → N RealizedPnlRecords**: Selling spans multiple lots = multiple P&L records
-- **1 Symbol → 1 RealizedPnlAggregate**: Cached summary for O(1) reads
+**Relationships**:
+- Position ↔ Symbol: ONE per symbol
+- BUY Trade: Creates one FifoLot
+- SELL Trade: Consumes N lots, creates N RealizedPnlRecords
+- RealizedPnlAggregate: Cached totals for O(1) reads
 
 **Storage Maps** (O(1) lookups):
 
@@ -333,11 +325,9 @@ sequenceDiagram
 
 ### P&L Calculation Details
 
-#### 1. Realized P&L (Locked-In Gains/Losses)
+#### 1. Realized P&L (Locked-In)
 
-**What it is**: Permanent profit/loss from closed positions. Once sold, it's locked in and won't change with market fluctuations.
-
-**When computed**: During SELL execution via FIFO lot matching.
+Permanent profit/loss from closed positions. Computed during SELL execution via FIFO lot matching.
 
 **Formula** (per matched lot):
 
@@ -353,15 +343,11 @@ $$
 | Lot 2 (2 of 3 BTC @ \$42k) | (45k - 42k) × 2 | \$6,000 |
 | **Total** | | **\$16,000** |
 
-**Properties**: One `RealizedPnlRecord` per lot matched (tax audit trail), cached in aggregate for O(1) queries, immutable once created.
-
 ---
 
 #### 2. Unrealized P&L (Mark-to-Market)
 
-**What it is**: Floating profit/loss on open positions. Changes with market price movements.
-
-**When computed**: On-demand during READ operations. Recalculated each query since prices constantly change.
+Floating profit/loss on open positions. Recomputed on-demand during READ operations.
 
 **Formula** (per position):
 
@@ -376,13 +362,11 @@ $$
 | \$44,000 | (44k - 42k) × 1 | \$2,000 |
 | \$41,000 | (41k - 42k) × 1 | -\$1,000 (loss) |
 
-**Properties**: Not locked in, uses weighted average entry price, skipped if market price unavailable.
-
 ---
 
-#### 3. Average Entry Price (Weighted Cost Basis)
+#### 3. Average Entry Price
 
-**What it is**: Weighted average price paid across all buy lots in current position.
+Weighted average price across all buy lots in current position.
 
 **Formula**:
 
@@ -753,7 +737,7 @@ npm run test:cov                # Generates coverage/lcov-report/index.html
 | GET /positions | 1.34ms | 3.15ms | 6.65ms |
 | GET /pnl | 1.45ms | 3.55ms | 6.41ms |
 
-**Optimization**: Cached P&L aggregates maintain O(1) latency regardless of trade history size. With 2,130 records, `GET /pnl` averages 1.79ms vs 100ms+ without caching.
+**Cache**: P&L aggregates maintain O(1) performance (1.79ms avg) vs O(n) without caching.
 
 ## Quick Start
 
@@ -887,14 +871,14 @@ flowchart LR
     Workers --> Cache
 ```
 
-**Key Design Choices**:
-- Redis for caching, streaming, and rate limiting (single cluster)
+**Design Choices**:
+- Redis for caching, streaming, and rate limiting
 - Idempotency via DB unique constraint on `trade_id`
-- Circuit breaker for external price feeds (fail fast)
+- Circuit breaker for external price feeds
 - Stateless API for horizontal scaling
-- User-based sharding for linear capacity growth
+- User-based sharding for linear capacity
 
-**Capacity Target**: 10k req/s with 20-30 API servers + 4-shard DB cluster
+**Target**: 10k req/s with 20-30 API servers + 4-shard DB cluster
 
 **Monitoring**: Prometheus metrics for latency (p99), cache hit rate, circuit breaker state, connection pool usage
 
