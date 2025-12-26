@@ -415,6 +415,22 @@ $$
 
 ---
 
+### Precision Considerations
+
+**Current**: JavaScript `number` (IEEE 754 double-precision)
+
+**The Problem**: USD amounts have decimals. `0.00123 BTC × $43,234.56 = $53.178608` introduces floating-point errors. P&L calculations compound this across thousands of trades.
+
+**MVP**: Good enough for demo. Test suite validates correctness at current scale.
+
+**Production**: Use `Decimal.js` when portfolio exceeds $1M or when integrating with exchanges (8-12 decimal price feeds).
+
+```typescript
+import Decimal from 'decimal.js';
+const pnl = new Decimal(sellPrice).minus(buyPrice).times(quantity);
+```
+
+---
 
 ## API Reference
 
