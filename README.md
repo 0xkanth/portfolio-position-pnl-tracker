@@ -270,78 +270,57 @@ Response for `GET /portfolio/pnl` - comprehensive P&L breakdown.
 
 **Scenario: Buy 2 BTC @ $40k, Buy 3 BTC @ $42k, then Sell 4 BTC @ $45k**
 
-1. **First Trade (BUY 2 @ $40k)**:
-   ```
-   CreateTradeDto → Trade entity → PortfolioService
-   → Creates Position {
-       symbol: "BTC", 
-       fifoQueue: [{qty: 2, price: 40000, tradeId: "t1"}], 
-       totalQty: 2, 
-       avgEntry: 40000
-     }
-   ```
+**1. First Trade (BUY 2 @ $40k)**
 
-2. **Second Trade (BUY 3 @ $42k)**:
-   ```
-   CreateTradeDto → Trade entity → PortfolioService
-   → Updates Position {
-       fifoQueue: [
-         {qty: 2, price: 40000, tradeId: "t1"},  // oldest
-         {qty: 3, price: 42000, tradeId: "t2"}   // newest
-       ], 
-       totalQty: 5, 
-       avgEntry: 41200  // (2×40k + 3×42k) / 5
-     }
-   ```
+Creates new position:
+- symbol: "BTC"
+- fifoQueue: `[{qty: 2, price: 40000, tradeId: "t1"}]`
+- totalQty: 2
+- avgEntry: 40000
 
-3. **Third Trade (SELL 4 @ $45k)** - Creates **2 RealizedPnlRecords**:
-   ```
-   CreateTradeDto → Trade entity → PortfolioService
-   → Fetches Position from Map
-   
-   → Match 1: Consumes entire first lot (2 BTC @ $40k)
-     • Creates RealizedPnlRecord #1: {
-         buyPrice: 40000, 
-         sellPrice: 45000, 
-         quantity: 2,
-         pnl: (45000-40000)×2 = $10,000
-       }
-   
-   → Match 2: Partially consumes second lot (2 of 3 BTC @ $42k)
-     • Creates RealizedPnlRecord #2: {
-         buyPrice: 42000, 
-         sellPrice: 45000, 
-         quantity: 2,
-         pnl: (45000-42000)×2 = $6,000
-       }
-   
-   → Updates RealizedPnlAggregate: {
-       totalPnl: 10000 + 6000 = $16,000, 
-       totalQty: 4
-     }
-   
-   → Updates Position: {
-       fifoQueue: [{qty: 1, price: 42000, tradeId: "t2"}],  // remaining
-       totalQty: 1, 
-       avgEntry: 42000
-     }
-   ```
+**2. Second Trade (BUY 3 @ $42k)**
 
-4. **Query Portfolio**:
-   ```
-   GET /portfolio/positions → PortfolioQueryService
-   → Reads Position: {totalQty: 1, avgEntry: 42000}
-   → Fetches currentPrice: 44000
-   → Builds PositionDto: {unrealizedPnl: (44000-42000)×1 = $2,000}
-   ```
+Updates position with new lot:
+- fifoQueue: 
+  - `{qty: 2, price: 40000, tradeId: "t1"}` (oldest)
+  - `{qty: 3, price: 42000, tradeId: "t2"}` (newest)
+- totalQty: 5
+- avgEntry: 41200 (weighted: (2 x 40k + 3 x 42k) / 5)
 
-5. **Query P&L**:
-   ```
-   GET /portfolio/pnl → PortfolioQueryService
-   → Reads RealizedPnlAggregate (O(1)): {totalPnl: $16,000}
-   → Computes unrealized: $2,000
-   → Returns: {realized: $16,000, unrealized: $2,000, net: $18,000}
-   ```
+**3. Third Trade (SELL 4 @ $45k)**
+
+FIFO matching consumes 2 lots:
+
+Match 1 (consumes entire first lot):
+- Lot: 2 BTC @ $40k
+- PnL Record: (45000 - 40000) x 2 = **$10,000**
+
+Match 2 (partial second lot):
+- Lot: 2 of 3 BTC @ $42k  
+- PnL Record: (45000 - 42000) x 2 = **$6,000**
+
+Aggregate update:
+- totalPnl: $16,000
+- totalQty closed: 4
+
+Remaining position:
+- fifoQueue: `[{qty: 1, price: 42000, tradeId: "t2"}]`
+- totalQty: 1
+- avgEntry: 42000
+
+**4. Query Portfolio**
+
+`GET /portfolio/positions`:
+- Reads position: 1 BTC @ $42,000 avg entry
+- Fetches current price: $44,000
+- Calculates unrealized: (44000 - 42000) x 1 = **$2,000**
+
+**5. Query P&L**
+
+`GET /portfolio/pnl`:
+- Realized (from cache): **$16,000**
+- Unrealized (computed): **$2,000**
+- Net P&L: **$18,000**
 
 ### Performance
 
@@ -460,128 +439,476 @@ sequenceDiagram
 - Unrealized calculation: [`src/portfolio/portfolio-query.service.ts:L120-L135`](./src/portfolio/portfolio-query.service.ts#L120-L135)
 - Response DTO: [`src/portfolio/dto/pnl-response.dto.ts`](./src/portfolio/dto/pnl-response.dto.ts)
 
-### Edge Cases
-
-**Partial lot consumption**: Updates quantity in-place when lot exceeds sell amount ([L155-165](./src/portfolio/portfolio.service.ts#L155-L165))
-
-**Fractional trading**: Supports 0.00000001 precision; production should use `Decimal.js` ([trade.entity.ts](./src/portfolio/entities/trade.entity.ts))
-
-**Insufficient balance**: Validates position quantity before executing sell ([L140-145](./src/portfolio/portfolio.service.ts#L140-L145))
-
-**Zero position cleanup**: Removes position from map when quantity reaches 0 ([L175-180](./src/portfolio/portfolio.service.ts#L175-L180))
-
 ### P&L Calculation Details
 
-**Realized P&L** (Locked In):
-```typescript
-// Reference: src/portfolio/portfolio.service.ts:L155-L175
-// Link: ./src/portfolio/portfolio.service.ts
-// Computed at SELL time, cached per symbol
+#### 1. Realized P&L (Locked-In Gains/Losses)
 
-for (const lot of matchedLots) {
-  const pnl = (sellPrice - lot.buyPrice) × lot.quantity;
-  
-  // Save detailed record for audit trail
-  const record = new RealizedPnlRecord();
-  record.symbol = symbol;
-  record.quantity = lot.quantity;
-  record.buyPrice = lot.buyPrice;
-  record.sellPrice = sellPrice;
-  record.pnl = pnl;
-  record.timestamp = new Date();
-  
-  this.storage.addRealizedPnlRecord(symbol, record);
-  
-  // Atomic aggregate update - O(1) future reads
-  // Reference: src/portfolio/portfolio-storage.service.ts:L76-L85
-  this.storage.updateRealizedPnlAggregate(symbol, {
-    totalPnl: aggregate.totalPnl + pnl,
-    closedQuantity: aggregate.closedQuantity + lot.quantity
-  });
-}
-```
+**What it is**: Permanent profit or loss from closed positions. Once a position is sold, the P&L is "realized" and becomes fixed - it won't change with market fluctuations.
 
-**Unrealized P&L** (Mark-to-Market):
-```typescript
-// Reference: src/portfolio/portfolio-query.service.ts:L120-L135
-// Link: ./src/portfolio/portfolio-query.service.ts
-// Computed at READ time (prices change constantly)
+**When computed**: During SELL trade execution. The system matches the sell against FIFO queue lots to determine cost basis.
 
-const unrealizedPnl: UnrealizedPnlDto[] = [];
+**Formula** (per matched lot):
 
-for (const [symbol, position] of this.storage.getAllPositions()) {
-  const currentPrice = this.marketPriceService.getPrice(symbol);
-  
-  if (!currentPrice) continue; // Skip if no price available
-  
-  const unrealized = (currentPrice - position.averageEntryPrice) 
-                     × position.totalQuantity;
-  
-  unrealizedPnl.push({
-### P&L Calculations
+$$
+\text{Realized P\&L}_{\text{lot}} = (\text{Sell Price} - \text{Lot Buy Price}) \times \text{Lot Quantity}
+$$
 
-**Realized P&L**: Cached aggregates per symbol for O(1) lookups ([storage.service.ts:L76](./src/portfolio/portfolio-storage.service.ts#L76))
-```typescript
-realizedPnlAggregates.get(symbol).totalPnl // pre-computed on each sell
-```
+**Example from Data Flow**:
 
-**Unrealized P&L**: Computed on-demand ([query.service.ts:L120-135](./src/portfolio/portfolio-query.service.ts#L120-L135))
-```typescript
-unrealizedPnl = (currentPrice - avgEntryPrice) × totalQuantity
-```
+Selling 4 BTC @ \$45,000 matches against FIFO queue [2 BTC @ \$40k, 3 BTC @ \$42k]:
 
-**Avg Entry Price**: Weighted average recalculated after every trade ([service.ts:L182-195](./src/portfolio/portfolio.service.ts#L182-L195))
+- **Lot 1** (entire lot consumed): $(45{,}000 - 40{,}000) \times 2 = \$10{,}000$
+- **Lot 2** (partial, 2 of 3 BTC): $(45{,}000 - 42{,}000) \times 2 = \$6{,}000$
+- **Total Realized**: $\$10{,}000 + \$6{,}000 = \$16{,}000$
 
-## API
+**Key Properties**:
+- Creates one `RealizedPnlRecord` per lot matched (immutable audit trail for tax reporting)
+- Cached in `RealizedPnlAggregate` for O(1) query performance
+- Never changes after creation - historical fact
 
-### POST /portfolio/trades
-Record trade (idempotent via `tradeId`).
+*Implementation: [portfolio.service.ts:L155-175](./src/portfolio/portfolio.service.ts#L155-L175), [storage.service.ts:L76-85](./src/portfolio/portfolio-storage.service.ts#L76-L85)*
 
-**Request**: `{tradeId, orderId, symbol, side: 'buy'|'sell', price, quantity, executionTimestamp}`
+---
 
-**Response**: `201 Created` with `{id, message, duplicate: false}` or `200 OK` if duplicate
+#### 2. Unrealized P&L (Mark-to-Market)
 
-### GET /portfolio/positions
-Current holdings with unrealized P&L.
+**What it is**: Floating profit or loss on open positions based on current market prices. Changes every time the market price moves.
 
-**Response**:
+**When computed**: On-demand during READ operations (`GET /portfolio/positions`, `GET /portfolio/pnl`). Not stored - recalculated each query since prices constantly change.
+
+**Formula** (per position):
+
+$$
+\text{Unrealized P\&L} = (\text{Current Market Price} - \text{Average Entry Price}) \times \text{Total Quantity Held}
+$$
+
+**Example from Data Flow**:
+
+After selling 4 BTC, you hold 1 BTC with average entry \$42,000. Current price: \$44,000:
+
+$$
+\text{Unrealized P\&L} = (44{,}000 - 42{,}000) \times 1 = \$2{,}000
+$$
+
+If price drops to \$41,000, your unrealized becomes:
+
+$$
+\text{Unrealized P\&L} = (41{,}000 - 42{,}000) \times 1 = -\$1{,}000 \text{ (loss)}
+$$
+
+**Key Properties**:
+- **Not locked in** - will change with next price update
+- Computed using position's weighted average entry price (see below)
+- Skipped for symbols with no current price data
+
+*Implementation: [portfolio-query.service.ts:L120-135](./src/portfolio/portfolio-query.service.ts#L120-L135)*
+
+---
+
+#### 3. Average Entry Price (Weighted Cost Basis)
+
+**What it is**: The weighted average price paid across all buy lots that make up your current position.
+
+**When computed**: Recalculated after every BUY trade. Used as cost basis for unrealized P&L.
+
+**Formula**:
+
+$$
+\text{Average Entry Price} = \frac{\sum_{i=1}^{n} (\text{Lot}_i.\text{price} \times \text{Lot}_i.\text{quantity})}{\text{Total Quantity Held}}
+$$
+
+**Example from Data Flow**:
+
+After BUY 2 BTC @ \$40k and BUY 3 BTC @ \$42k:
+
+$$
+\text{Average Entry} = \frac{(40{,}000 \times 2) + (42{,}000 \times 3)}{2 + 3} = \frac{80{,}000 + 126{,}000}{5} = \frac{206{,}000}{5} = \$41{,}200
+$$
+
+After selling 4 BTC, remaining position is 1 BTC from the second lot:
+
+$$
+\text{Average Entry} = \frac{42{,}000 \times 1}{1} = \$42{,}000
+$$
+
+**Key Properties**:
+- Cached on `Position` entity for fast reads
+- Only includes current FIFO queue lots (sold lots don't affect it)
+- Used as baseline for unrealized P&L calculations
+
+*Implementation: [portfolio.service.ts:L182-195](./src/portfolio/portfolio.service.ts#L182-L195)*
+
+---
+
+#### 4. Net P&L (Total Performance)
+
+**What it is**: Complete portfolio performance = locked-in gains + floating gains.
+
+**Formula**:
+
+$$
+\text{Net P\&L} = \text{Total Realized P\&L} + \text{Total Unrealized P\&L}
+$$
+
+**Example from Data Flow**:
+
+After all trades:
+- Realized (locked in): \$16,000
+- Unrealized (1 BTC held @ \$44k with \$42k cost): \$2,000
+- **Net P&L**: $\$16{,}000 + \$2{,}000 = \$18{,}000$
+
+This represents your total profit if you closed all positions at current market prices.
+
+
+### Edge Cases & Boundary Conditions
+
+The FIFO engine handles several non-trivial scenarios that arise in real trading. Here's how the system addresses each:
+
+#### 1. Partial Lot Consumption
+
+**Scenario**: Sell quantity is smaller than the oldest lot in the FIFO queue.
+
+**Example**:
+- FIFO queue: [5 BTC @ \$40k, 3 BTC @ \$42k]
+- Sell: 2 BTC @ \$45k
+
+**Handling**:
+- Matches against first lot only
+- Updates lot in-place: 5 BTC → 3 BTC remaining
+- Queue becomes: [3 BTC @ \$40k, 3 BTC @ \$42k]
+- Realized P&L: $(45{,}000 - 40{,}000) \times 2 = \$10{,}000$
+
+**Why it matters**: Preserves original cost basis for remaining quantity. The 3 BTC still in the queue maintain their \$40k purchase price for future sells.
+
+*Implementation: [portfolio.service.ts:L155-165](./src/portfolio/portfolio.service.ts#L155-L165)*
+
+
+#### 2. Multi-Lot FIFO Matching
+
+**Scenario**: Sell quantity spans multiple lots in the queue.
+
+**Example**:
+- FIFO queue: [2 BTC @ \$40k, 3 BTC @ \$42k, 4 BTC @ \$43k]
+- Sell: 7 BTC @ \$45k
+
+**Handling**:
+- **Match 1**: Entire first lot (2 BTC @ \$40k) → PnL: \$10,000
+- **Match 2**: Entire second lot (3 BTC @ \$42k) → PnL: \$9,000
+- **Match 3**: Partial third lot (2 of 4 BTC @ \$43k) → PnL: \$4,000
+- Creates **3 separate RealizedPnlRecords** (one per lot)
+- Queue becomes: [2 BTC @ \$43k]
+- Total realized: \$23,000
+
+**Why it matters**: Each lot has different cost basis → different P&L per lot. Critical for accurate tax reporting (IRS requires lot-level detail).
+
+*Implementation: Loop in [portfolio.service.ts:L155-175](./src/portfolio/portfolio.service.ts#L155-L175)*
+
+
+#### 3. Fractional/Decimal Quantities
+
+**Scenario**: Trading fractional amounts (common in crypto: 0.00123 BTC).
+
+**Example**:
+- Buy: 0.5 BTC @ \$40,000
+- Buy: 1.75 BTC @ \$42,000
+- Sell: 1.8 BTC @ \$45,000
+
+**Handling**:
+- JavaScript `number` type supports up to 15-17 significant digits
+- FIFO matching works with decimals: 0.5 consumed, then 1.3 of 1.75
+- Remaining: 0.45 BTC @ \$42,000
+
+**Precision limits**:
+- Current: Safe for amounts > 0.00000001 (8 decimals)
+- Large portfolios (>\$10M): Recommend `Decimal.js` to avoid floating-point drift
+- Formula: After 1000 trades, error accumulation < $0.01 per position
+
+**Why it matters**: Crypto allows micro-purchases. Floating-point precision sufficient for MVP but needs monitoring at scale.
+
+*Implementation: [trade.entity.ts](./src/portfolio/entities/trade.entity.ts) (uses TypeScript `number`)*
+
+
+#### 4. Insufficient Balance (Overselling)
+
+**Scenario**: Attempting to sell more than currently held.
+
+**Example**:
+- Position: 2 BTC
+- Sell request: 5 BTC
+
+**Handling**:
+- Validates `sellQuantity <= position.totalQuantity` BEFORE FIFO matching
+- Returns HTTP 400 error: `"Insufficient balance"`
+- **No partial execution** - trade is rejected entirely
+- Position remains unchanged
+
+**Why it matters**: Prevents negative positions (system doesn't support short selling). All-or-nothing semantics ensure data integrity.
+
+*Implementation: Validation at [portfolio.service.ts:L140-145](./src/portfolio/portfolio.service.ts#L140-L145)*
+
+
+#### 5. Zero Position Cleanup
+
+**Scenario**: Selling entire position - queue becomes empty.
+
+**Example**:
+- Position: 3 BTC (FIFO queue with 3 BTC total)
+- Sell: 3 BTC @ \$45,000
+
+**Handling**:
+- FIFO matching consumes all lots
+- `totalQuantity` reaches 0
+- Position removed from `positions` Map entirely
+- Average entry price becomes undefined
+- Realized P&L aggregate persists (historical record)
+
+**Why it matters**: Clean memory usage - don't store empty positions. But P&L history remains for queries/reporting.
+
+**Behavior on next buy**: Creates fresh position with new FIFO queue (no carryover from old position).
+
+*Implementation: [portfolio.service.ts:L175-180](./src/portfolio/portfolio.service.ts#L175-L180)*
+
+
+#### 6. Missing Price Data
+
+**Scenario**: Computing unrealized P&L when market price unavailable.
+
+**Example**:
+- Position: 10 XYZ tokens
+- Market price service returns `null` (delisted or data feed down)
+
+**Handling**:
+- Skips unrealized P&L calculation for that symbol
+- Position excluded from portfolio response's unrealized totals
+- Realized P&L still accurate (locked in at sell time)
+- No errors thrown - graceful degradation
+
+**Why it matters**: Portfolio remains queryable even with partial data. Prevents cascading failures from external price feeds.
+
+*Implementation: Check in [portfolio-query.service.ts:L120-135](./src/portfolio/portfolio-query.service.ts#L120-L135)*
+
+
+## API Reference
+
+Base URL: `http://localhost:3000`
+
+### Trade Management
+
+#### `POST http://localhost:3000/portfolio/trades`
+
+Record a new trade with FIFO accounting. Idempotent via `tradeId`.
+
+**Request**:
 ```json
 {
-  "positions": [{
-    "symbol": "BTC",
-    "totalQuantity": 2.5,
-    "averageEntryPrice": 41200,
-    "currentValue": 110000,
-    "unrealizedPnl": 7000
-  }],
-  "totalValue": 110000
+  "tradeId": "t1",
+  "orderId": "o1",
+  "symbol": "BTC",
+  "side": "buy",
+  "price": 40000,
+  "quantity": 2,
+  "executionTimestamp": "2024-01-15T10:00:00Z"
 }
 ```
 
-### GET /portfolio/pnl
-Complete P&L breakdown (realized + unrealized).
-
-**Response**:
+**Response** `201 Created`:
 ```json
 {
-  "totalRealizedPnl": 3000,
-  "totalUnrealizedPnl": 3000,
-  "netPnl": 6000,
-  "realizedPnl": [{symbol, realizedPnl, closedQuantity}],
-  "unrealizedPnl": [{symbol, unrealizedPnl, currentQuantity}]
+  "id": "2bb2ecb6-ae52-4012-a853-005eadab2e9f",
+  "tradeId": "t1",
+  "symbol": "BTC",
+  "side": "buy",
+  "price": 40000,
+  "quantity": 2,
+  "message": "Trade recorded successfully",
+  "duplicate": false
 }
 ```
 
-### POST /portfolio/market-prices/bulk
-Update multiple prices atomically: `{"prices": {"BTC": 45000, "ETH": 3000}}`
+### Portfolio Queries
 
-**Price Management**:
-- `init-prices.sh`: Fetches live prices from CoinGecko API with fallback defaults
-- `load-test.js`: Uses CoinGecko API with hardcoded fallback prices if API fails
-- Bulk update endpoint ensures atomic price updates across multiple symbols
+#### `GET http://localhost:3000/portfolio/positions`
 
-### POST /portfolio/reset
-Clear all data (testing only)
+Returns current holdings with unrealized P&L. Without parameters, returns ALL symbols.
+
+**Query Parameters**:
+- `symbol` (optional): Filter by single symbol (e.g., `?symbol=BTC`)
+- `symbols` (optional): Filter by comma-separated list (e.g., `?symbols=BTC,ETH`)
+
+**Response** `200 OK` (all symbols):
+```json
+{
+  "positions": [
+    {
+      "symbol": "BTC",
+      "totalQuantity": 1,
+      "averageEntryPrice": 40000,
+      "currentPrice": 45000,
+      "currentValue": 45000,
+      "unrealizedPnl": 5000
+    },
+    {
+      "symbol": "ETH",
+      "totalQuantity": 5,
+      "averageEntryPrice": 2800,
+      "currentPrice": 3000,
+      "currentValue": 15000,
+      "unrealizedPnl": 1000
+    },
+    {
+      "symbol": "SOL",
+      "totalQuantity": 10,
+      "averageEntryPrice": 90,
+      "currentPrice": 100,
+      "currentValue": 1000,
+      "unrealizedPnl": 100
+    }
+  ],
+  "totalValue": 61000,
+  "totalUnrealizedPnl": 6100
+}
+```
+
+**Filtered Response** `200 OK` (`?symbol=ETH`):
+```json
+{
+  "positions": [
+    {
+      "symbol": "ETH",
+      "totalQuantity": 5,
+      "averageEntryPrice": 2800,
+      "currentPrice": 3000,
+      "currentValue": 15000,
+      "unrealizedPnl": 1000
+    }
+  ],
+  "totalValue": 15000,
+  "totalUnrealizedPnl": 1000
+}
+```
+
+#### `GET http://localhost:3000/portfolio/pnl`
+
+Complete P&L breakdown with realized (locked-in) and unrealized (mark-to-market). Without parameters, returns ALL symbols.
+
+**Query Parameters**:
+- `symbols` (optional): Comma-separated list to filter (e.g., `?symbols=BTC,ETH` or `?symbols=SOL`)
+
+**Response** `200 OK` (all symbols):
+```json
+{
+  "realizedPnl": [
+    {
+      "symbol": "BTC",
+      "realizedPnl": 5000,
+      "closedQuantity": 1
+    }
+  ],
+  "unrealizedPnl": [
+    {
+      "symbol": "BTC",
+      "unrealizedPnl": 5000,
+      "currentQuantity": 1,
+      "averageEntryPrice": 40000,
+      "currentPrice": 45000
+    },
+    {
+      "symbol": "ETH",
+      "unrealizedPnl": 1000,
+      "currentQuantity": 5,
+      "averageEntryPrice": 2800,
+      "currentPrice": 3000
+    },
+    {
+      "symbol": "SOL",
+      "unrealizedPnl": 100,
+      "currentQuantity": 10,
+      "averageEntryPrice": 90,
+      "currentPrice": 100
+    }
+  ],
+  "totalRealizedPnl": 5000,
+  "totalUnrealizedPnl": 6100,
+  "netPnl": 11100
+}
+```
+
+**Filtered Response** `200 OK` (`?symbols=BTC,ETH`):
+```json
+{
+  "realizedPnl": [
+    {
+      "symbol": "BTC",
+      "realizedPnl": 5000,
+      "closedQuantity": 1
+    }
+  ],
+  "unrealizedPnl": [
+    {
+      "symbol": "BTC",
+      "unrealizedPnl": 5000,
+      "currentQuantity": 1,
+      "averageEntryPrice": 40000,
+      "currentPrice": 45000
+    },
+    {
+      "symbol": "ETH",
+      "unrealizedPnl": 1000,
+      "currentQuantity": 5,
+      "averageEntryPrice": 2800,
+      "currentPrice": 3000
+    }
+  ],
+  "totalRealizedPnl": 5000,
+  "totalUnrealizedPnl": 6000,
+  "netPnl": 11000
+}
+```
+
+### Market Data
+
+#### `POST http://localhost:3000/portfolio/market-prices/bulk`
+
+Update market prices for multiple symbols atomically.
+
+**Request**:
+```json
+{
+  "prices": {
+    "BTC": 45000,
+    "ETH": 3000,
+    "SOL": 100
+  }
+}
+```
+
+**Response** `200 OK`:
+```json
+{
+  "message": "Market prices updated",
+  "updatedSymbols": ["BTC", "ETH", "SOL"],
+  "prices": {
+    "BTC": 45000,
+    "ETH": 3000,
+    "SOL": 100
+  }
+}
+```
+
+**Tip**: Use `./init-prices.sh` to fetch live prices from CoinGecko API.
+
+### Testing Utilities
+
+#### `POST http://localhost:3000/portfolio/reset`
+
+Clear all data (testing only).
+
+**Response** `200 OK`:
+```json
+{
+  "message": "Portfolio reset successfully"
+}
+```
 
 ## Testing
 

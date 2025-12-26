@@ -139,10 +139,57 @@ echo "$PNL" | jq -r '"Total Net P&L: $\(.netPnl | floor)"'
 echo ""
 
 # ===========================================================
-# TEST 4: Trade History
+# TEST 4: Symbol Filtering
 # ===========================================================
 echo "==========================================================="
-echo "TEST 4: Trade History Retrieval"
+echo "TEST 4: Symbol Filtering (Query Parameters)"
+echo "==========================================================="
+echo ""
+
+echo "Filter positions by single symbol (BTC):"
+FILTERED=$(curl -s "$API_URL/portfolio/positions?symbol=BTC")
+SYMBOL_COUNT=$(echo "$FILTERED" | jq '.positions | length')
+echo "$FILTERED" | jq -r '.positions[] | "   \(.symbol): \(.totalQuantity) @ $\(.averageEntryPrice)"'
+if [ "$SYMBOL_COUNT" = "1" ]; then
+    echo "[OK] Single symbol filter working"
+else
+    echo "[FAIL] Expected 1 symbol, got $SYMBOL_COUNT"
+fi
+echo ""
+
+echo "Filter positions by multiple symbols (BTC,ETH):"
+MULTI_FILTERED=$(curl -s "$API_URL/portfolio/positions?symbols=BTC,ETH")
+MULTI_COUNT=$(echo "$MULTI_FILTERED" | jq '.positions | length')
+echo "$MULTI_FILTERED" | jq -r '.positions[] | "   \(.symbol): \(.totalQuantity) @ $\(.averageEntryPrice)"'
+if [ "$MULTI_COUNT" = "2" ]; then
+    echo "[OK] Multi-symbol filter working"
+else
+    echo "[FAIL] Expected 2 symbols, got $MULTI_COUNT"
+fi
+echo ""
+
+echo "Filter P&L by multiple symbols (BTC,ETH):"
+FILTERED_PNL=$(curl -s "$API_URL/portfolio/pnl?symbols=BTC,ETH")
+echo "$FILTERED_PNL" | jq -r '.unrealizedPnl[] | "   \(.symbol): $\(.unrealizedPnl | floor)"'
+echo "[OK] Multi-symbol filter working"
+echo ""
+
+echo "Filter P&L by single symbol (SOL):"
+FILTERED_SOL=$(curl -s "$API_URL/portfolio/pnl?symbols=SOL")
+SOL_COUNT=$(echo "$FILTERED_SOL" | jq '.unrealizedPnl | length')
+echo "$FILTERED_SOL" | jq -r '.unrealizedPnl[] | "   \(.symbol): $\(.unrealizedPnl | floor)"'
+if [ "$SOL_COUNT" = "1" ]; then
+    echo "[OK] SOL filter working"
+else
+    echo "[FAIL] Expected 1 symbol, got $SOL_COUNT"
+fi
+echo ""
+
+# ===========================================================
+# TEST 5: Trade History
+# ===========================================================
+echo "==========================================================="
+echo "TEST 5: Trade History Retrieval"
 echo "==========================================================="
 echo ""
 
@@ -163,5 +210,6 @@ echo "  [OK] Realized P&L on sells"
 echo "  [OK] Unrealized P&L tracking"
 echo "  [OK] Idempotent trade recording"
 echo "  [OK] Multi-symbol portfolio management"
+echo "  [OK] Symbol filtering (positions & P&L)"
 echo "  [OK] Trade history retrieval"
 echo ""

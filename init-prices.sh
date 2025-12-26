@@ -40,7 +40,7 @@ echo "  MATIC: \$$MATIC_PRICE (default)"
 
 # Send bulk update to API
 echo ""
-echo "📤 Updating prices in portfolio tracker..."
+echo "Updating prices in portfolio tracker..."
 
 PAYLOAD=$(cat <<EOF
 {

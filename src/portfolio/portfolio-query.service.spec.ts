@@ -91,7 +91,7 @@ describe('PortfolioQueryService', () => {
         quantity: 5,
       }));
 
-      const portfolio = queryService.getPortfolio('BTC');
+      const portfolio = queryService.getPortfolio(['BTC']);
       expect(portfolio.positions).toHaveLength(1);
       expect(portfolio.positions[0].symbol).toBe('BTC');
     });
@@ -104,7 +104,7 @@ describe('PortfolioQueryService', () => {
         quantity: 1,
       }));
 
-      const portfolio = queryService.getPortfolio('ETH');
+      const portfolio = queryService.getPortfolio(['ETH']);
       expect(portfolio.positions).toHaveLength(0);
       expect(portfolio.totalValue).toBe(0);
     });

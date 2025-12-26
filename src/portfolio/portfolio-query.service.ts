@@ -18,14 +18,14 @@ export class PortfolioQueryService {
    * Excludes closed positions (totalQuantity = 0).
    * Uses latest market price or entry price as fallback.
    * 
-   * @param symbol - Optional filter for single symbol
+   * @param symbols - Optional filter for specific symbols
    */
-  getPortfolio(symbol?: string): PortfolioResponseDto {
+  getPortfolio(symbols?: string[]): PortfolioResponseDto {
     let positions = this.storage.getAllPositions();
     
-    if (symbol) {
-      const position = this.storage.getPosition(symbol);
-      positions = position ? [position] : [];
+    if (symbols && symbols.length > 0) {
+      const symbolSet = new Set(symbols);
+      positions = positions.filter((pos) => symbolSet.has(pos.symbol));
     }
     const positionsWithPnl = positions
       .filter((pos) => pos.totalQuantity > 0)

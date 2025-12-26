@@ -64,12 +64,18 @@ export class PortfolioController {
    * Returns current holdings with unrealized P&L.
    * 
    * GET /portfolio/positions?symbol=BTC
+   * GET /portfolio/positions?symbols=BTC,ETH
    * @param symbol - Optional filter for single position
+   * @param symbolsQuery - Optional comma-separated symbols
    */
   @Get('positions')
   @HttpCode(HttpStatus.OK)
-  getPortfolio(@Query('symbol') symbol?: string): PortfolioResponseDto {
-    return this.queryService.getPortfolio(symbol);
+  getPortfolio(
+    @Query('symbol') symbol?: string,
+    @Query('symbols') symbolsQuery?: string,
+  ): PortfolioResponseDto {
+    const symbols = symbolsQuery ? symbolsQuery.split(',').map(s => s.trim()) : (symbol ? [symbol] : undefined);
+    return this.queryService.getPortfolio(symbols);
   }
 
   /**
