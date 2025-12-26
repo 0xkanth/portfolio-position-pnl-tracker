@@ -2,13 +2,11 @@
 
 Crypto portfolio tracker with FIFO accounting, CQRS pattern, and P&L calculations.
 
-**Stack**: 
-- NestJS 10 
-- TypeScript 5 
-- Jest 
-- Docker
-
-**Quick Links**: [Architecture](#architecture) • [API Docs](#api) • [Quick Start](#quick-start) • [Testing](#testing)
+**Quick Links**: 
+- [Architecture](#architecture) 
+- [API Docs](#api) 
+- [Quick Start](#quick-start) 
+- [Testing](#testing)
 
 ## Approach & Assumptions
 
@@ -39,6 +37,12 @@ Crypto portfolio tracker with FIFO accounting, CQRS pattern, and P&L calculation
 7. **Partial Fills Handled Atomically**: Each trade is a complete execution. Multiple partial fills would be separate trade records.
 
 8. **No Short Positions**: Only long positions tracked. Selling more than owned returns validation error.
+
+### Stack: 
+- NestJS 10 
+- TypeScript 5 
+- Jest 
+- Docker
 
 ## Architecture
 
