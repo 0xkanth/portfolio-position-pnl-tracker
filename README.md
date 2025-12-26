@@ -143,184 +143,121 @@ erDiagram
 - **1 SELL Trade → N RealizedPnlRecords**: Selling spans multiple lots = multiple P&L records
 - **1 Symbol → 1 RealizedPnlAggregate**: Cached summary for O(1) reads
 
-**Critical Understanding**:
-```typescript
-// Map structure: symbol is the key
-positions: Map<symbol, Position>
+**Storage Maps** (O(1) lookups):
 
-// Example state after trades:
-positions = {
-  "BTC": {
-    symbol: "BTC",
-    totalQuantity: 5,
-    fifoQueue: [
-      {qty: 2, price: 40000, tradeId: "t1"},  // BUY #1 created this lot
-      {qty: 3, price: 42000, tradeId: "t2"}   // BUY #2 created this lot
-    ]
-  },
-  "ETH": {
-    symbol: "ETH",
-    totalQuantity: 10,
-    fifoQueue: [
-      {qty: 10, price: 3000, tradeId: "t3"}   // BUY #3 created this lot
-    ]
-  }
+| Map | Key | Value | Purpose |
+|-----|-----|-------|---------|
+| `tradeIdIndex` | `tradeId` | `Trade` | Idempotency check |
+| `positions` | `symbol` | `Position` | Current holdings + FIFO queue |
+| `realizedPnlRecords` | `symbol` | `RealizedPnlRecord[]` | Audit trail |
+| `realizedPnlAggregates` | `symbol` | `Aggregate` | Cached P&L totals |
+
+**Trade Behavior**:
+- **BUY**: Appends new lot to position's FIFO queue
+- **SELL**: Consumes lots from queue front (oldest first)
+
+**Example State**:
+```typescript
+positions.get("BTC") = {
+  symbol: "BTC",
+  totalQuantity: 5,
+  fifoQueue: [
+    {qty: 2, price: 40000, tradeId: "t1"},  // oldest
+    {qty: 3, price: 42000, tradeId: "t2"}   // newest
+  ]
 }
 ```
 
-**Per-Trade Behavior**:
-- **BUY trade**: Adds 1 new FifoLot to the symbol's Position.fifoQueue (appends to end)
-- **SELL trade**: Removes/reduces FifoLots from front of queue (oldest first = FIFO)
+### Domain Entities
 
-**Storage Implementation**:
-```typescript
-// In-memory Maps for O(1) lookups
-tradeIdIndex: Map<tradeId, Trade>                    // idempotency
-positions: Map<symbol, Position>                      // current holdings
-realizedPnlRecords: Map<symbol, RealizedPnlRecord[]> // audit trail
-realizedPnlAggregates: Map<symbol, Aggregate>        // cached totals
-```
+| Entity | Purpose | Key Concept | Implementation |
+|--------|---------|-------------|----------------|
+| **Trade** | Immutable trade record | Idempotency via `tradeId` | [trade.entity.ts](./src/portfolio/entities/trade.entity.ts) |
+| **Position** | Current holdings per symbol | FIFO queue + weighted avg cost | [position.entity.ts](./src/portfolio/entities/position.entity.ts) |
+| **RealizedPnlRecord** | Locked-in P&L per lot match | Tax audit trail | [realized-pnl-record.entity.ts](./src/portfolio/entities/realized-pnl-record.entity.ts) |
+| **RealizedPnlAggregate** | Cached P&L totals | O(1) query performance | In-memory cache |
 
-### Entities (Domain Models)
+### API DTOs
 
-**Trade** ([trade.entity.ts](./src/portfolio/entities/trade.entity.ts))
-
-Immutable record of executed trade from broker/exchange.
-
-**Key Fields**: `id`, `tradeId` (idempotency key), `orderId`, `symbol`, `side`, `price`, `quantity`, `executionTimestamp`
-
-**Lifecycle**: Created on `POST /portfolio/trades` → stored in append-only log → indexed by `tradeId` for O(1) duplicate detection
-
-**Purpose**: Audit trail, idempotency guarantees, compliance reporting
-
-**Position** ([position.entity.ts](./src/portfolio/entities/position.entity.ts))
-
-Current holdings per symbol with FIFO queue for cost basis tracking. **ONE Position per symbol.**
-
-**Key Fields**: 
-- `symbol` (PK): Asset identifier
-- `fifoQueue`: Array of FifoLots (oldest at index 0)
-- `totalQuantity`: Current holding (cached sum)
-- `averageEntryPrice`: Weighted average cost basis
-
-**FifoLot**: `{quantity, price, tradeId}` - tracks individual buy lot with cost basis
-
-**Lifecycle**: 
-- Created on first BUY → Updated on every trade (BUY appends lot, SELL consumes from front) → Deleted when quantity reaches zero
-
-**Purpose**: FIFO matching, unrealized P&L calculation, portfolio snapshots
-
-**RealizedPnlRecord** ([realized-pnl-record.entity.ts](./src/portfolio/entities/realized-pnl-record.entity.ts))
-
-Immutable record of locked-in profit/loss from closed positions.
-
-**Key Fields**: `symbol`, `quantity`, `buyPrice` (from FIFO lot), `sellPrice`, `pnl`, `timestamp`
-
-**Lifecycle**: Created during SELL, **one record per FIFO lot matched** (Sell 5 BTC matching 3 lots → 3 records) → stored in array per symbol → never modified
-
-**Purpose**: Tax reporting, audit trail, detailed P&L history
+| DTO | Endpoint | Purpose | Key Fields |
+|-----|----------|---------|------------|
+| **CreateTradeDto** | `POST /trades` | Validate trade input | `tradeId`, `symbol`, `side`, `price`, `quantity` |
+| **PortfolioResponseDto** | `GET /positions` | Holdings + unrealized P&L | `positions[]`, `totalValue`, `totalUnrealizedPnl` |
+| **PnlResponseDto** | `GET /pnl` | Complete P&L breakdown | `realizedPnl[]`, `unrealizedPnl[]`, `netPnl` |
 
 ---
-
-**RealizedPnlAggregate**
-
-Cached summary for O(1) realized P&L queries.
-
-**Key Fields**: `totalPnl` (sum of all records), `totalQuantity` (total closed)
-
-**Lifecycle**: Updated atomically with each RealizedPnlRecord creation
-
-**Purpose**: Avoid O(n) sum over all records on every P&L query
-
-### DTOs (Data Transfer Objects)
-
-**CreateTradeDto** ([create-trade.dto.ts](./src/portfolio/dto/create-trade.dto.ts))
-
-Request validation for `POST /portfolio/trades`.
-
-**Fields**: `tradeId` (idempotency key), `orderId`, `symbol`, `side`, `price`, `quantity`, `executionTimestamp`
-
-**Validation**: All fields required, price/quantity must be positive, side enum enforced, timestamp ISO 8601
-
-**Flow**: HTTP JSON → class-validator → Trade entity (or 422 error)
-
----
-
-**PortfolioResponseDto** ([portfolio-response.dto.ts](./src/portfolio/dto/portfolio-response.dto.ts))
-
-Response for `GET /portfolio/positions` - current holdings with unrealized P&L.
-
-**Structure**: `{positions: PositionDto[], totalValue, totalUnrealizedPnl}`
-
-**Built from**: Position entities + current prices (computed on-demand)
-
----
-
-**PnlResponseDto** ([pnl-response.dto.ts](./src/portfolio/dto/pnl-response.dto.ts))
-
-Response for `GET /portfolio/pnl` - comprehensive P&L breakdown.
-
-**Structure**: `{realizedPnl[], unrealizedPnl[], totalRealizedPnl, totalUnrealizedPnl, netPnl}`
-
-**Data Sources**:
-- Realized: `realizedPnlAggregates` Map (O(1) cached)
-- Unrealized: Position entities + current prices (computed)
 
 ### Data Flow Example
 
-**Scenario: Buy 2 BTC @ $40k, Buy 3 BTC @ $42k, then Sell 4 BTC @ $45k**
+**Scenario**: Buy 2 BTC @ \$40k, Buy 3 BTC @ \$42k, then Sell 4 BTC @ \$45k
 
-**1. First Trade (BUY 2 @ $40k)**
+#### Step 1: BUY 2 BTC @ \$40,000
 
 Creates new position:
-- symbol: "BTC"
-- fifoQueue: `[{qty: 2, price: 40000, tradeId: "t1"}]`
-- totalQty: 2
-- avgEntry: 40000
+```typescript
+{
+  symbol: "BTC",
+  totalQty: 2,
+  avgEntry: 40000,
+  fifoQueue: [{qty: 2, price: 40000, tradeId: "t1"}]
+}
+```
 
-**2. Second Trade (BUY 3 @ $42k)**
+#### Step 2: BUY 3 BTC @ \$42,000
 
-Updates position with new lot:
-- fifoQueue: 
-  - `{qty: 2, price: 40000, tradeId: "t1"}` (oldest)
-  - `{qty: 3, price: 42000, tradeId: "t2"}` (newest)
-- totalQty: 5
-- avgEntry: 41200 (weighted: (2 x 40k + 3 x 42k) / 5)
+Appends to FIFO queue, recalculates weighted average:
+```typescript
+{
+  symbol: "BTC",
+  totalQty: 5,
+  avgEntry: 41200,  // (2×40k + 3×42k) / 5
+  fifoQueue: [
+    {qty: 2, price: 40000, tradeId: "t1"},  // oldest
+    {qty: 3, price: 42000, tradeId: "t2"}   // newest
+  ]
+}
+```
 
-**3. Third Trade (SELL 4 @ $45k)**
+#### Step 3: SELL 4 BTC @ \$45,000
 
-FIFO matching consumes 2 lots:
+FIFO matching consumes from queue front:
 
-Match 1 (consumes entire first lot):
-- Lot: 2 BTC @ $40k
-- PnL Record: (45000 - 40000) x 2 = **$10,000**
+| Match | Lot Consumed | PnL Calculation | Result |
+|-------|--------------|-----------------|--------|
+| 1 | 2 BTC @ \$40k (entire lot) | (45k - 40k) × 2 | \$10,000 |
+| 2 | 2 of 3 BTC @ \$42k (partial) | (45k - 42k) × 2 | \$6,000 |
 
-Match 2 (partial second lot):
-- Lot: 2 of 3 BTC @ $42k  
-- PnL Record: (45000 - 42000) x 2 = **$6,000**
+**Total Realized PnL**: \$16,000 (cached in aggregate)
 
-Aggregate update:
-- totalPnl: $16,000
-- totalQty closed: 4
+**Remaining Position**:
+```typescript
+{
+  symbol: "BTC",
+  totalQty: 1,
+  avgEntry: 42000,
+  fifoQueue: [{qty: 1, price: 42000, tradeId: "t2"}]
+}
+```
 
-Remaining position:
-- fifoQueue: `[{qty: 1, price: 42000, tradeId: "t2"}]`
-- totalQty: 1
-- avgEntry: 42000
+#### Step 4: GET /portfolio/positions
 
-**4. Query Portfolio**
+Query computes unrealized PnL using current market price:
 
-`GET /portfolio/positions`:
-- Reads position: 1 BTC @ $42,000 avg entry
-- Fetches current price: $44,000
-- Calculates unrealized: (44000 - 42000) x 1 = **$2,000**
+| Position | Avg Entry | Current Price | Calculation | Unrealized PnL |
+|----------|-----------|---------------|-------------|----------------|
+| 1 BTC | \$42,000 | \$44,000 | (44k - 42k) × 1 | \$2,000 |
 
-**5. Query P&L**
+#### Step 5: GET /portfolio/pnl
 
-`GET /portfolio/pnl`:
-- Realized (from cache): **$16,000**
-- Unrealized (computed): **$2,000**
-- Net P&L: **$18,000**
+Returns complete P&L breakdown:
+
+```json
+{
+  "realizedPnl": [{"symbol": "BTC", "realizedPnl": 16000}],
+  "unrealizedPnl": [{"symbol": "BTC", "unrealizedPnl": 2000}],
+  "netPnl": 18000
+}
+```
 
 ### Performance
 
@@ -559,6 +496,7 @@ After all trades:
 
 This represents your total profit if you closed all positions at current market prices.
 
+---
 
 ### Edge Cases & Boundary Conditions
 
