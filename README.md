@@ -259,40 +259,42 @@ Returns complete P&L breakdown:
 }
 ```
 
-### Performance
+---
 
-| Operation | Complexity | Latency (p99) |
-|-----------|------------|---------------|
-| Add Trade (BUY) | O(1) | 0.3ms |
-| Add Trade (SELL) | O(k)* | 0.5ms |
-| Get Portfolio | O(s)† | 1.2ms |
-| Get Realized PnL | **O(1)** | <0.1ms |
+## Performance Characteristics
 
-*k = lots matched (typically <10), †s = symbols (typically <50)
+### Algorithmic Complexity
 
-### Performance Benchmarks (Measured)
+| Operation | Complexity | Latency (p99) | Notes |
+|-----------|------------|---------------|-------|
+| BUY Trade | O(1) | 0.3ms | Append to FIFO queue |
+| SELL Trade | O(k) | 0.5ms | k = lots matched (typically <10) |
+| Get Positions | O(s) | 1.2ms | s = symbols held (typically <50) |
+| Get Realized PnL | O(1) | <0.1ms | Cached aggregates |
 
-**Test Environment**: MacBook (8-core, 16GB RAM), Node.js v18+
+### Load Test Results
 
-**Load Test Results** (`./test-load.sh`):
+**Environment**: MacBook M1/M2 (8-core, 16GB RAM), Node.js v18+
 
-| Phase | Duration | Load | Throughput | Results |
-|-------|----------|------|------------|---------|
-| Warmup | 5s | 10 req/s | - | System warm-up |
-| Sustained | 30s | 150 req/s (50 writes + 100 reads) | 189 req/s | 92% success rate |
-| Spike | 5s | 600 req/s (200 writes + 400 reads) | Peak load | Stress test |
+**Test Profile** (`./test-load.sh`): 3-phase load pattern with mixed read/write operations
 
-**Latency Percentiles** (from sustained load phase):
+| Phase | Duration | Target Load | Throughput Achieved | Notes |
+|-------|----------|-------------|---------------------|-------|
+| Warmup | 5s | 10 req/s | - | JIT optimization |
+| Sustained | 30s | 150 req/s (33% writes) | **189 req/s** | 92% success rate |
+| Spike | 5s | 600 req/s (33% writes) | Peak stress | Burst handling |
 
-| Endpoint | Avg | p50 | p95 | p99 | p99.9 |
-|----------|-----|-----|-----|-----|-------|
-| POST /trades | 1.95ms | 1.71ms | 3.57ms | **7.19ms** | 16.16ms |
-| GET /positions | 1.63ms | 1.34ms | 3.15ms | **6.65ms** | 15.71ms |
-| GET /pnl | 1.79ms | 1.45ms | 3.55ms | **6.41ms** | 14.83ms |
+**Latency Distribution** (sustained phase):
 
-**Cache Optimization Impact**: With 2,130 realized P&L records generated during test, GET /pnl maintains O(1) latency (~1.79ms) instead of O(n) growth. Without caching, latency would scale linearly with record count.
+| Endpoint | p50 | p95 | p99 | p99.9 |
+|----------|-----|-----|-----|-------|
+| `POST /trades` | 1.71ms | 3.57ms | 7.19ms | 16.16ms |
+| `GET /positions` | 1.34ms | 3.15ms | 6.65ms | 15.71ms |
+| `GET /pnl` | 1.45ms | 3.55ms | 6.41ms | 14.83ms |
 
-**Throughput Achieved**: 189 req/s sustained with sub-10ms p99 latencies
+**Key Insight**: With 2,130 P&L records generated during test, `GET /pnl` maintains **constant O(1) latency** (~1.79ms avg) due to cached aggregates. Without caching, latency would scale linearly to ~100ms+ with record growth.
+
+---
 
 ## FIFO Engine
 
@@ -380,9 +382,9 @@ sequenceDiagram
 
 #### 1. Realized P&L (Locked-In Gains/Losses)
 
-**What it is**: Permanent profit or loss from closed positions. Once a position is sold, the P&L is "realized" and becomes fixed - it won't change with market fluctuations.
+**What it is**: Permanent profit/loss from closed positions. Once sold, it's locked in and won't change with market fluctuations.
 
-**When computed**: During SELL trade execution. The system matches the sell against FIFO queue lots to determine cost basis.
+**When computed**: During SELL execution via FIFO lot matching.
 
 **Formula** (per matched lot):
 
@@ -390,28 +392,23 @@ $$
 \text{Realized PnL}_{\text{lot}} = (\text{Sell Price} - \text{Lot Buy Price}) \times \text{Lot Quantity}
 $$
 
-**Example from Data Flow**:
+**Example**: Selling 4 BTC @ \$45k against queue [2 BTC @ \$40k, 3 BTC @ \$42k]
 
-Selling 4 BTC @ \$45,000 matches against FIFO queue [2 BTC @ \$40k, 3 BTC @ \$42k]:
+| Match | Calculation | P&L |
+|-------|-------------|-----|
+| Lot 1 (2 BTC @ \$40k) | (45k - 40k) × 2 | \$10,000 |
+| Lot 2 (2 of 3 BTC @ \$42k) | (45k - 42k) × 2 | \$6,000 |
+| **Total** | | **\$16,000** |
 
-- **Lot 1** (entire lot consumed): $(45{,}000 - 40{,}000) \times 2 = \$10{,}000$
-- **Lot 2** (partial, 2 of 3 BTC): $(45{,}000 - 42{,}000) \times 2 = \$6{,}000$
-- **Total Realized**: $\$10{,}000 + \$6{,}000 = \$16{,}000$
-
-**Key Properties**:
-- Creates one `RealizedPnlRecord` per lot matched (immutable audit trail for tax reporting)
-- Cached in `RealizedPnlAggregate` for O(1) query performance
-- Never changes after creation - historical fact
-
-*Implementation: [portfolio.service.ts:L155-175](./src/portfolio/portfolio.service.ts#L155-L175), [storage.service.ts:L76-85](./src/portfolio/portfolio-storage.service.ts#L76-L85)*
+**Properties**: One `RealizedPnlRecord` per lot matched (tax audit trail), cached in aggregate for O(1) queries, immutable once created.
 
 ---
 
 #### 2. Unrealized P&L (Mark-to-Market)
 
-**What it is**: Floating profit or loss on open positions based on current market prices. Changes every time the market price moves.
+**What it is**: Floating profit/loss on open positions. Changes with market price movements.
 
-**When computed**: On-demand during READ operations (`GET /portfolio/positions`, `GET /portfolio/pnl`). Not stored - recalculated each query since prices constantly change.
+**When computed**: On-demand during READ operations. Recalculated each query since prices constantly change.
 
 **Formula** (per position):
 
@@ -419,34 +416,20 @@ $$
 \text{Unrealized PnL} = (\text{Current Market Price} - \text{Average Entry Price}) \times \text{Total Quantity Held}
 $$
 
-**Example from Data Flow**:
+**Example**: Hold 1 BTC with \$42k average entry
 
-After selling 4 BTC, you hold 1 BTC with average entry \$42,000. Current price: \$44,000:
+| Current Price | Calculation | Unrealized P&L |
+|---------------|-------------|----------------|
+| \$44,000 | (44k - 42k) × 1 | \$2,000 |
+| \$41,000 | (41k - 42k) × 1 | -\$1,000 (loss) |
 
-$$
-\text{Unrealized PnL} = (44{,}000 - 42{,}000) \times 1 = \$2{,}000
-$$
-
-If price drops to \$41,000, your unrealized becomes:
-
-$$
-\text{Unrealized PnL} = (41{,}000 - 42{,}000) \times 1 = -\$1{,}000 \text{ (loss)}
-$$
-
-**Key Properties**:
-- **Not locked in** - will change with next price update
-- Computed using position's weighted average entry price (see below)
-- Skipped for symbols with no current price data
-
-*Implementation: [portfolio-query.service.ts:L120-135](./src/portfolio/portfolio-query.service.ts#L120-L135)*
+**Properties**: Not locked in, uses weighted average entry price, skipped if market price unavailable.
 
 ---
 
 #### 3. Average Entry Price (Weighted Cost Basis)
 
-**What it is**: The weighted average price paid across all buy lots that make up your current position.
-
-**When computed**: Recalculated after every BUY trade. Used as cost basis for unrealized P&L.
+**What it is**: Weighted average price paid across all buy lots in current position.
 
 **Formula**:
 
@@ -454,32 +437,23 @@ $$
 \text{Average Entry Price} = \frac{\sum_{i=1}^{n} (\text{Lot}_i.\text{price} \times \text{Lot}_i.\text{quantity})}{\text{Total Quantity Held}}
 $$
 
-**Example from Data Flow**:
-
-After BUY 2 BTC @ \$40k and BUY 3 BTC @ \$42k:
+**Example**: After BUY 2 BTC @ \$40k, BUY 3 BTC @ \$42k
 
 $$
-\text{Average Entry} = \frac{(40{,}000 \times 2) + (42{,}000 \times 3)}{2 + 3} = \frac{80{,}000 + 126{,}000}{5} = \frac{206{,}000}{5} = \$41{,}200
+\text{Average Entry} = \frac{(40{,}000 \times 2) + (42{,}000 \times 3)}{5} = \$41{,}200
 $$
 
-After selling 4 BTC, remaining position is 1 BTC from the second lot:
+After selling 4 BTC, remaining 1 BTC from second lot:
 
 $$
-\text{Average Entry} = \frac{42{,}000 \times 1}{1} = \$42{,}000
+\text{Average Entry} = \$42{,}000
 $$
 
-**Key Properties**:
-- Cached on `Position` entity for fast reads
-- Only includes current FIFO queue lots (sold lots don't affect it)
-- Used as baseline for unrealized P&L calculations
-
-*Implementation: [portfolio.service.ts:L182-195](./src/portfolio/portfolio.service.ts#L182-L195)*
+**Properties**: Recalculated after every BUY, cached for fast reads, only includes current FIFO queue lots.
 
 ---
 
 #### 4. Net P&L (Total Performance)
-
-**What it is**: Complete portfolio performance = locked-in gains + floating gains.
 
 **Formula**:
 
@@ -487,143 +461,22 @@ $$
 \text{Net PnL} = \text{Total Realized PnL} + \text{Total Unrealized PnL}
 $$
 
-**Example from Data Flow**:
-
-After all trades:
-- Realized (locked in): \$16,000
-- Unrealized (1 BTC held @ \$44k with \$42k cost): \$2,000
-- **Net PnL**: $\$16{,}000 + \$2{,}000 = \$18{,}000$
-
-This represents your total profit if you closed all positions at current market prices.
+**Example**: Realized \$16k + Unrealized \$2k = **Net \$18k**
 
 ---
 
-### Edge Cases & Boundary Conditions
+### Edge Cases
 
-The FIFO engine handles several non-trivial scenarios that arise in real trading. Here's how the system addresses each:
+| Scenario | Handling | Impact |
+|----------|----------|--------|
+| **Partial Lot** | Sell < oldest lot → updates lot in-place (e.g., 5 BTC → 3 BTC remaining) | Preserves cost basis |
+| **Multi-Lot Match** | Sell spans multiple lots → creates separate PnL record per lot | Tax audit trail |
+| **Fractional Amounts** | JavaScript `number` supports 8+ decimals (e.g., 0.5 BTC, 1.75 BTC) | Safe for MVP; use `Decimal.js` for >\$10M portfolios |
+| **Overselling** | Validates balance before execution → HTTP 400 if insufficient | No short positions |
+| **Zero Position** | Selling entire position → removes from Map, P&L history persists | Clean memory |
+| **Missing Prices** | No current price → skips unrealized PnL for that symbol | Graceful degradation |
 
-#### 1. Partial Lot Consumption
-
-**Scenario**: Sell quantity is smaller than the oldest lot in the FIFO queue.
-
-**Example**:
-- FIFO queue: [5 BTC @ \$40k, 3 BTC @ \$42k]
-- Sell: 2 BTC @ \$45k
-
-**Handling**:
-- Matches against first lot only
-- Updates lot in-place: 5 BTC → 3 BTC remaining
-- Queue becomes: [3 BTC @ \$40k, 3 BTC @ \$42k]
-- Realized P&L: $(45{,}000 - 40{,}000) \times 2 = \$10{,}000$
-
-**Why it matters**: Preserves original cost basis for remaining quantity. The 3 BTC still in the queue maintain their \$40k purchase price for future sells.
-
-*Implementation: [portfolio.service.ts:L155-165](./src/portfolio/portfolio.service.ts#L155-L165)*
-
-
-#### 2. Multi-Lot FIFO Matching
-
-**Scenario**: Sell quantity spans multiple lots in the queue.
-
-**Example**:
-- FIFO queue: [2 BTC @ \$40k, 3 BTC @ \$42k, 4 BTC @ \$43k]
-- Sell: 7 BTC @ \$45k
-
-**Handling**:
-- **Match 1**: Entire first lot (2 BTC @ \$40k) → PnL: \$10,000
-- **Match 2**: Entire second lot (3 BTC @ \$42k) → PnL: \$9,000
-- **Match 3**: Partial third lot (2 of 4 BTC @ \$43k) → PnL: \$4,000
-- Creates **3 separate RealizedPnlRecords** (one per lot)
-- Queue becomes: [2 BTC @ \$43k]
-- Total realized: \$23,000
-
-**Why it matters**: Each lot has different cost basis → different P&L per lot. Critical for accurate tax reporting (IRS requires lot-level detail).
-
-*Implementation: Loop in [portfolio.service.ts:L155-175](./src/portfolio/portfolio.service.ts#L155-L175)*
-
-
-#### 3. Fractional/Decimal Quantities
-
-**Scenario**: Trading fractional amounts (common in crypto: 0.00123 BTC).
-
-**Example**:
-- Buy: 0.5 BTC @ \$40,000
-- Buy: 1.75 BTC @ \$42,000
-- Sell: 1.8 BTC @ \$45,000
-
-**Handling**:
-- JavaScript `number` type supports up to 15-17 significant digits
-- FIFO matching works with decimals: 0.5 consumed, then 1.3 of 1.75
-- Remaining: 0.45 BTC @ \$42,000
-
-**Precision limits**:
-- Current: Safe for amounts > 0.00000001 (8 decimals)
-- Large portfolios (>\$10M): Recommend `Decimal.js` to avoid floating-point drift
-- Formula: After 1000 trades, error accumulation < $0.01 per position
-
-**Why it matters**: Crypto allows micro-purchases. Floating-point precision sufficient for MVP but needs monitoring at scale.
-
-*Implementation: [trade.entity.ts](./src/portfolio/entities/trade.entity.ts) (uses TypeScript `number`)*
-
-
-#### 4. Insufficient Balance (Overselling)
-
-**Scenario**: Attempting to sell more than currently held.
-
-**Example**:
-- Position: 2 BTC
-- Sell request: 5 BTC
-
-**Handling**:
-- Validates `sellQuantity <= position.totalQuantity` BEFORE FIFO matching
-- Returns HTTP 400 error: `"Insufficient balance"`
-- **No partial execution** - trade is rejected entirely
-- Position remains unchanged
-
-**Why it matters**: Prevents negative positions (system doesn't support short selling). All-or-nothing semantics ensure data integrity.
-
-*Implementation: Validation at [portfolio.service.ts:L140-145](./src/portfolio/portfolio.service.ts#L140-L145)*
-
-
-#### 5. Zero Position Cleanup
-
-**Scenario**: Selling entire position - queue becomes empty.
-
-**Example**:
-- Position: 3 BTC (FIFO queue with 3 BTC total)
-- Sell: 3 BTC @ \$45,000
-
-**Handling**:
-- FIFO matching consumes all lots
-- `totalQuantity` reaches 0
-- Position removed from `positions` Map entirely
-- Average entry price becomes undefined
-- Realized P&L aggregate persists (historical record)
-
-**Why it matters**: Clean memory usage - don't store empty positions. But P&L history remains for queries/reporting.
-
-**Behavior on next buy**: Creates fresh position with new FIFO queue (no carryover from old position).
-
-*Implementation: [portfolio.service.ts:L175-180](./src/portfolio/portfolio.service.ts#L175-L180)*
-
-
-#### 6. Missing Price Data
-
-**Scenario**: Computing unrealized P&L when market price unavailable.
-
-**Example**:
-- Position: 10 XYZ tokens
-- Market price service returns `null` (delisted or data feed down)
-
-**Handling**:
-- Skips unrealized P&L calculation for that symbol
-- Position excluded from portfolio response's unrealized totals
-- Realized P&L still accurate (locked in at sell time)
-- No errors thrown - graceful degradation
-
-**Why it matters**: Portfolio remains queryable even with partial data. Prevents cascading failures from external price feeds.
-
-*Implementation: Check in [portfolio-query.service.ts:L120-135](./src/portfolio/portfolio-query.service.ts#L120-L135)*
+---
 
 
 ## API Reference
