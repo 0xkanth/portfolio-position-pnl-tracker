@@ -182,11 +182,7 @@ positions.get("BTC") = {
 
 ### Data Flow Example
 
-**Scenario**: Mixed precision trades demonstrating Decimal.js accuracy
-
 #### Buy: 0.00123456 BTC @ \$43,234.567891
-
-Creates position with exact precision:
 ```typescript
 {
   symbol: "BTC",
@@ -197,8 +193,6 @@ Creates position with exact precision:
 ```
 
 #### Buy: 1.5 ETH @ \$2,987.65
-
-Clean decimals handled identically:
 ```typescript
 {
   symbol: "ETH",
@@ -210,15 +204,11 @@ Clean decimals handled identically:
 
 #### Sell: 0.00123456 BTC @ \$45,678.912345
 
-FIFO matching with exact P&L:
-
 | Match | Lot | PnL Calculation | Result |
 |-------|-----|-----------------|--------|
 | 1 | 0.00123456 @ \$43,234.567891 | (45678.912345 - 43234.567891) × 0.00123456 | \$3.02 |
 
-**Realized PnL**: \$3.02 (exact: 3.01768988967838464, rounded to 2 decimals for USD)
-
-**Query Response**:
+Exact: 3.01768988967838464, displayed as \$3.02
 ```json
 {
   "realizedPnl": [{"symbol": "BTC", "realizedPnl": 3.02, "closedQuantity": 0.00123456}],
@@ -301,9 +291,7 @@ sequenceDiagram
 
 ### P&L Calculation Details
 
-#### 1. Realized P&L (Locked-In)
-
-Computed during SELL execution via FIFO lot matching with exact decimal arithmetic.
+#### 1. Realized P&L
 
 **Formula** (per matched lot):
 
@@ -328,9 +316,7 @@ $$
 
 ---
 
-#### 2. Unrealized P&L (Mark-to-Market)
-
-Recomputed on-demand with current market prices.
+#### 2. Unrealized P&L
 
 **Formula**:
 
@@ -349,8 +335,6 @@ $$
 ---
 
 #### 3. Average Entry Price
-
-Weighted average with exact precision across all buy lots.
 
 **Formula**:
 
@@ -708,7 +692,7 @@ npm run test:cov                # Generates coverage/lcov-report/index.html
 
 ## Performance
 
-**MVP Throughput**: 189 req/s sustained @ sub-10ms p99 latency (in-memory, single machine)
+189 req/s sustained, sub-10ms p99 latency (in-memory).
 
 ### Complexity & Latency
 
@@ -723,15 +707,13 @@ npm run test:cov                # Generates coverage/lcov-report/index.html
 
 ### Load Test Results
 
-**Environment**: MacBook M1/M2 (8-core, 16GB), Node.js v18+, 30s sustained load
-
 | Endpoint | p50 | p95 | p99 |
 |----------|-----|-----|-----|
 | POST /trades | 1.71ms | 3.57ms | 7.19ms |
 | GET /positions | 1.34ms | 3.15ms | 6.65ms |
 | GET /pnl | 1.45ms | 3.55ms | 6.41ms |
 
-**Cache**: P&L aggregates maintain O(1) performance (1.79ms avg) vs O(n) without caching.
+**Cache impact**: P&L aggregates = O(1) performance.
 
 ## Quick Start
 
@@ -777,12 +759,6 @@ curl http://localhost:3000/portfolio/pnl
 ```
 
 ## Docker Deployment
-
-**Multi-stage Production Build**: Dockerfile with builder stage (dependencies + compilation) + production stage (runtime only).
-
-**Health Monitoring**: Built-in healthcheck probing `/health` endpoint every 10 seconds.
-
-**Performance**: 192 req/s throughput with ~5ms added latency vs native (~3.19ms avg write, ~2.73ms avg read).
 
 ### Docker Commands
 
@@ -847,8 +823,6 @@ docker-compose down
 
 ## Production Considerations
 
-**Current MVP**: 189 req/s sustained @ sub-10ms p99 latency (in-memory, single machine)
-
 ### Scaling Strategy
 
 | Component | Technology | Purpose | Expected Throughput |
@@ -861,8 +835,6 @@ docker-compose down
 | **Sharding** | User-based | Hash `user_id` to 4 DB shards | 4x capacity, no cross-shard joins |
 
 ### Architecture Summary
-
-**Event-Driven Flow**:
 
 ```mermaid
 flowchart LR
@@ -878,70 +850,49 @@ flowchart LR
     Workers --> Cache
 ```
 
-**Design Choices**:
-- Redis for caching, streaming, and rate limiting
-- Idempotency via DB unique constraint on `trade_id`
-- Circuit breaker for external price feeds
-- Stateless API for horizontal scaling
-- User-based sharding for linear capacity
+Redis for caching/streaming/rate limiting, idempotency via DB constraint, circuit breaker for price feeds, stateless API, user-based sharding.
 
 **Target**: 10k req/s with 20-30 API servers + 4-shard DB cluster
 
-**Monitoring**: Prometheus metrics for latency (p99), cache hit rate, circuit breaker state, connection pool usage
+---
 
 ## Multi-User Architecture
 
 ### 1. Data Model Changes
 
 Add `user_id` to all entities:
-- **Trade**: `user_id` becomes partition key, `trade_id` unique per user (not global)
-- **Position**: Composite key `(user_id, symbol)` - one position per user+symbol pair
+- **Trade**: `user_id` partition key, `trade_id` unique per user
+- **Position**: Composite key `(user_id, symbol)`
 - **Storage**: Nested maps `Map<user_id, Map<symbol, Position>>`
-
-**Impact**: All lookups require `user_id` - current `positions.get("BTC")` becomes `positions.get(userId).get("BTC")`
 
 ### 2. Database Schema
 
-**TimescaleDB changes**:
-- Trades: Hypertable partitioned by `time` (automatic time-series optimization), composite PK `(user_id, trade_id, time)`
-- Positions: Composite PK `(user_id, symbol)`, index on `user_id`
-- Single DB instance sufficient for MVP (<100k users)
+Trades: Hypertable partitioned by `time`, composite PK `(user_id, trade_id, time)`  
+Positions: Composite PK `(user_id, symbol)`, index on `user_id`
 
 ### 3. API Changes
 
-**Pass `user_id` in request payload**:
-- Add `user_id` field to all API requests (trades, positions, P&L queries)
-- Service layer filters all operations by `user_id`
-- Client responsible for providing correct `user_id`
+Add `user_id` field to all requests. Service layer filters by `user_id`.
 
 ### 4. Caching Strategy
 
-**Cache only aggregated data** (not individual trades/FIFO queues):
-- **Positions**: `user:{userId}:position:{symbol}` - Current holdings per symbol
-- **P&L aggregates**: `user:{userId}:pnl` - Realized/unrealized totals
-- **Prices**: `price:{symbol}` - Shared across all users
-- TTL: 5s + jitter (0-2s) to prevent stampede, invalidate on user's writes
-
-**Why not cache trades/queues**:
-- Millions of trades = TB of Redis memory (expensive)
-- FIFO queues change on every trade (high invalidation churn)
-- Trades rarely re-read after creation (append-only audit log)
-- Cache only hot read paths (positions, P&L), not cold storage (trades)
+Cache aggregates only:
+- **Positions**: `user:{userId}:position:{symbol}`
+- **P&L aggregates**: `user:{userId}:pnl`
+- **Prices**: `price:{symbol}` (shared)
+- TTL: 5s + jitter, invalidate on writes
 
 ### 5. Event Streaming
 
-**Partition by `user_id` to preserve trade order**:
-- Create 4-8 streams: `trade-events:0`, `trade-events:1`, `trade-events:2`, `trade-events:3`
-- Write: Hash `user_id` % 4 → determines stream (same user always → same stream)
-- Read: Each consumer pinned to one stream (4 consumers for 4 streams)
-- Guarantee: Same user_id → same stream → same consumer → ordering preserved
+Partition by `user_id` to preserve order:
+- 4-8 streams: `trade-events:0` through `trade-events:3`
+- Hash `user_id` % 4 → determines stream
+- Each consumer pinned to one stream
+- Same user → same stream → same consumer → order preserved
 
-**Why not single stream**: Consumer groups distribute events round-robin → same user's trades to different workers → order lost
+### 6. Horizontal Scaling
 
-### 6. Horizontal Scaling (Optional - only if >100k users)
-
-**Manual DB sharding by user_id** (application-level routing):
-- Run 4 separate TimescaleDB instances
-- Hash `user_id` % 4 → routes to DB instance (0=DB1, 1=DB2, 2=DB3, 3=DB4)
-- All user data co-located on same instance (no cross-shard joins)
-- Trade-off: Hot users may overload single instance
+Manual DB sharding by `user_id`:
+- 4 separate TimescaleDB instances
+- Hash `user_id` % 4 routes to DB instance
+- User data co-located on same instance

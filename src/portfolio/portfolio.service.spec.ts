@@ -282,7 +282,7 @@ describe('PortfolioService - Mutations', () => {
     });
   });
 
-  describe('Decimal precision scenarios', () => {
+  describe('Decimal precision tests', () => {
     it('should handle clean decimal quantities', () => {
       service.addTrade(createTestTradeDto({
         symbol: 'BTC',

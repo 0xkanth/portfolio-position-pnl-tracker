@@ -3,13 +3,13 @@
 API_URL="http://localhost:3000"
 
 echo ""
-echo "COMPREHENSIVE FINANCIAL CORRECTNESS TEST - FIFO"
-echo "================================================"
+echo "FIFO FINANCIAL CORRECTNESS TEST"
+echo "================================"
 echo ""
 
-echo "Resetting portfolio to clean state..."
+echo "Resetting portfolio..."
 curl -s -X POST "$API_URL/portfolio/reset" > /dev/null
-echo "Portfolio reset complete"
+echo "Done"
 echo ""
 
 echo "Initializing market prices..."
@@ -17,10 +17,8 @@ echo "Initializing market prices..."
 echo ""
 
 echo "="
-echo "TEST 1: Mixed Decimal Precision - High-Precision Crypto Trades"
+echo "TEST 1: Mixed Decimal Precision"
 echo "="
-echo ""
-echo "Scenario: Buy/sell with messy decimals (0.00123456 BTC @ 43234.567891)"
 echo ""
 
 # Buy: High-precision price and quantity
@@ -54,21 +52,18 @@ REALIZED=$(echo "$PNL" | jq -r '.realizedPnl[0].realizedPnl')
 CLOSED_QTY=$(echo "$PNL" | jq -r '.realizedPnl[0].closedQuantity')
 
 echo ""
-echo "CHECK: Decimal Precision Calculation:"
-echo "  P&L = (45678.912345 - 43234.567891) × 0.00123456"
-echo "  Expected = 2444.344454 × 0.00123456 ≈ \$3.02"
+echo "CHECK: P&L calculation:"
+echo "  (45678.912345 - 43234.567891) × 0.00123456 ≈ \$3.02"
 echo "  Actual = \$$REALIZED"
 echo ""
 
 echo "="
-echo "TEST 2: Complex FIFO with Multiple Lots and Partial Sells"
+echo "TEST 2: Multi-lot FIFO with Partial Sells"
 echo "="
-echo ""
-echo "Scenario: Buy 3 lots at different prices, sell in parts"
 echo ""
 
 # Buy Lot 1: 2 BTC @ $30,000 (Cost: $60,000)
-echo "1. Buy 2 BTC @ \$30,000"
+echo "1. Buy 2 SOL @ \$30,000"
 curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
   -d '{"tradeId":"comp-004","orderId":"order-c4","symbol":"SOL","side":"buy","price":30000,"quantity":2,"executionTimestamp":"2024-01-15T12:00:00Z"}' > /dev/null
 
