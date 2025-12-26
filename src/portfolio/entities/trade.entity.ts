@@ -1,3 +1,5 @@
+import Decimal from 'decimal.js';
+
 export enum TradeSide {
   BUY = 'buy',
   SELL = 'sell',
@@ -12,8 +14,8 @@ export interface Trade {
   userId?: string;            // for multi-user systems
   symbol: string;             // BTC, ETH, etc.
   side: TradeSide;
-  price: number;
-  quantity: number;
+  price: Decimal;
+  quantity: Decimal;
   executionTimestamp: Date;
   createdAt?: Date;
 }

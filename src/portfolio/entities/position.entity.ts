@@ -1,7 +1,9 @@
+import Decimal from 'decimal.js';
+
 // FIFO lot - tracks a single buy lot with its cost basis.
 export interface FifoLot {
-  quantity: number;
-  price: number;         // cost basis
+  quantity: Decimal;
+  price: Decimal;         // cost basis
   tradeId: string;
 }
 
@@ -10,6 +12,6 @@ export interface FifoLot {
 export interface Position {
   symbol: string;
   fifoQueue: FifoLot[];        // oldest first
-  totalQuantity: number;       // cached sum
-  averageEntryPrice: number;   // weighted average
+  totalQuantity: Decimal;       // cached sum
+  averageEntryPrice: Decimal;   // weighted average
 }

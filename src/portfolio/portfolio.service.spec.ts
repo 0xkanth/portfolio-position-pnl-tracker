@@ -5,6 +5,7 @@ import { MarketPriceService } from '../market-price/market-price.service';
 import { TradeSide } from './entities/trade.entity';
 import { BadRequestException } from '@nestjs/common';
 import { CreateTradeDto } from './dto/create-trade.dto';
+import Decimal from 'decimal.js';
 
 describe('PortfolioService - Mutations', () => {
   let service: PortfolioService;
@@ -120,8 +121,8 @@ describe('PortfolioService - Mutations', () => {
 
       // Verify position was updated correctly (oldest lot removed)
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1);
-      expect(position!.averageEntryPrice).toBe(42000); // Only second lot remains
+      expect(position!.totalQuantity.toNumber()).toBe(1);
+      expect(position!.averageEntryPrice.toNumber()).toBe(42000); // Only second lot remains
     });
 
     it('should handle partial lot consumption', () => {
@@ -148,8 +149,8 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1);
-      expect(position!.averageEntryPrice).toBe(42000);
+      expect(position!.totalQuantity.toNumber()).toBe(1);
+      expect(position!.averageEntryPrice.toNumber()).toBe(42000);
     });
 
     it('should update position correctly after exact quantity sell', () => {
@@ -168,7 +169,7 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(0); // Position closed
+      expect(position!.totalQuantity.toNumber()).toBe(0); // Position closed
       expect(position!.fifoQueue).toHaveLength(0); // No lots remaining
     });
   });
@@ -207,7 +208,7 @@ describe('PortfolioService - Mutations', () => {
       service.addTrade(dto); // Duplicate
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1); // Not 2!
+      expect(position!.totalQuantity.toNumber()).toBe(1); // Not 2!
     });
   });
 
@@ -237,8 +238,8 @@ describe('PortfolioService - Mutations', () => {
       const btcPosition = storage.getPosition('BTC');
       const ethPosition = storage.getPosition('ETH');
 
-      expect(btcPosition!.totalQuantity).toBe(0.5);
-      expect(ethPosition!.totalQuantity).toBe(5);
+      expect(btcPosition!.totalQuantity.toNumber()).toBe(0.5);
+      expect(ethPosition!.totalQuantity.toNumber()).toBe(5);
     });
   });
 
@@ -261,8 +262,8 @@ describe('PortfolioService - Mutations', () => {
       const ethAggregate = aggregates.get('ETH');
 
       expect(ethAggregate).toBeDefined();
-      expect(ethAggregate!.totalPnl).toBe(600); // (2200-2000)*3
-      expect(ethAggregate!.totalQuantity).toBe(3);
+      expect(ethAggregate!.totalPnl.toNumber()).toBe(600); // (2200-2000)*3
+      expect(ethAggregate!.totalQuantity.toNumber()).toBe(3);
     });
 
     it('should accumulate PnL across multiple sells', () => {
@@ -271,13 +272,13 @@ describe('PortfolioService - Mutations', () => {
       
       let aggregates = storage.getRealizedPnlAggregates();
       let btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(1000); // (42000-40000)*0.5
+      expect(btcAggregate!.totalPnl.toNumber()).toBe(1000); // (42000-40000)*0.5
 
       service.addTrade(createTestTradeDto({ symbol: 'BTC', side: TradeSide.SELL, price: 43000, quantity: 0.5 }));
       
       aggregates = storage.getRealizedPnlAggregates();
       btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(2500); // 1000 + (43000-40000)*0.5
+      expect(btcAggregate!.totalPnl.toNumber()).toBe(2500); // 1000 + (43000-40000)*0.5
     });
   });
 
@@ -291,7 +292,7 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(0.5);
+      expect(position!.totalQuantity.toNumber()).toBe(0.5);
     });
 
     it('should handle negative PnL (losses)', () => {
@@ -311,7 +312,7 @@ describe('PortfolioService - Mutations', () => {
 
       const aggregates = storage.getRealizedPnlAggregates();
       const btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(-5000);
+      expect(btcAggregate!.totalPnl.toNumber()).toBe(-5000);
     });
   });
 });

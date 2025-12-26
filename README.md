@@ -27,13 +27,14 @@ Crypto portfolio tracker with FIFO accounting, CQRS pattern, and P&L calculation
 | **Storage** | In-memory | PostgreSQL/TimescaleDB |
 | **Users** | Single user | Multi-tenant with JWT auth |
 | **Prices** | Manual API updates | WebSocket feeds (Binance/Coinbase) |
-| **Precision** | JavaScript `number` | `Decimal.js` for >$10M portfolios |
+| **Precision** | `Decimal.js` (8 decimal places) | Same |
 | **Symbols** | Uppercase (BTC, ETH) | Normalized + validated |
 | **Positions** | Long only | No short selling support |
 
 ### Stack: 
 - NestJS 10 
 - TypeScript 5 
+- **Decimal.js** (financial precision)
 - Jest 
 - Docker
 
@@ -408,61 +409,10 @@ $$
 |----------|----------|--------|
 | **Partial Lot** | Sell < oldest lot → updates lot in-place (e.g., 5 BTC → 3 BTC remaining) | Preserves cost basis |
 | **Multi-Lot Match** | Sell spans multiple lots → creates separate PnL record per lot | Tax audit trail |
-| **Fractional Amounts** | JavaScript `number` supports 8+ decimals (e.g., 0.5 BTC, 1.75 BTC) | Safe for MVP; use `Decimal.js` for >\$10M portfolios |
+| **Fractional Amounts** | Supports 8+ decimal precision via `Decimal.js` (e.g., 0.00000123 BTC) | Production-ready |
 | **Overselling** | Validates balance before execution → HTTP 400 if insufficient | No short positions |
 | **Zero Position** | Selling entire position → removes from Map, P&L history persists | Clean memory |
 | **Missing Prices** | No current price → skips unrealized PnL for that symbol | Graceful degradation |
-
----
-
-### Precision Considerations
-
-**Problem**: USD amounts contain decimals → JavaScript `number` loses precision
-
-#### Where It Happens
-
-```typescript
-// Input: Clean numbers
-price: 43234.567891      // Exchange feed (8 decimals)
-quantity: 0.00123        // Crypto amount
-
-// Output: USD with many decimals
-pnl = (43234.567891 - 42100.123456) × 0.00123
-    = 1.3946706... USD   // ⚠️ This value gets returned in API
-```
-
-#### Impact on API Responses
-
-| Endpoint | Returns USD Values | Precision Risk |
-|----------|-------------------|----------------|
-| `POST /trades` | `realizedPnl: 16000.456789` | Multi-decimal USD |
-| `GET /pnl` | `netPnl: 18234.891234` | Summing 1000+ trades |
-| `GET /positions` | `totalValue: 45678.123456` | Quantity × Price |
-
-#### Decision Matrix
-
-| Scenario | Risk Level | Action |
-|----------|------------|--------|
-| MVP demo (<$100k portfolio) | Low | Use JavaScript `number` |
-| Portfolio >$1M | Medium | Migrate to `Decimal.js` |
-| Exchange integration | High | **Required** - price feeds have 12 decimals |
-| Tax reporting | High | **Required** - must match broker exactly |
-
-#### Production Fix
-
-```typescript
-import Decimal from 'decimal.js';
-
-// Replace all financial math
-const pnl = new Decimal(sellPrice)
-  .minus(buyPrice)
-  .times(quantity);
-  
-// API returns clean decimals
-return { realizedPnl: pnl.toNumber() };
-```
-
-**Current Status**: Documented limitation. MVP scale validated by test suite.
 
 ---
 
