@@ -417,18 +417,52 @@ $$
 
 ### Precision Considerations
 
-**Current**: JavaScript `number` (IEEE 754 double-precision)
+**Problem**: USD amounts contain decimals → JavaScript `number` loses precision
 
-**The Problem**: USD amounts have decimals. `0.00123 BTC × $43,234.56 = $53.178608` introduces floating-point errors. P&L calculations compound this across thousands of trades.
+#### Where It Happens
 
-**MVP**: Good enough for demo. Test suite validates correctness at current scale.
+```typescript
+// Input: Clean numbers
+price: 43234.567891      // Exchange feed (8 decimals)
+quantity: 0.00123        // Crypto amount
 
-**Production**: Use `Decimal.js` when portfolio exceeds $1M or when integrating with exchanges (8-12 decimal price feeds).
+// Output: USD with many decimals
+pnl = (43234.567891 - 42100.123456) × 0.00123
+    = 1.3946706... USD   // ⚠️ This value gets returned in API
+```
+
+#### Impact on API Responses
+
+| Endpoint | Returns USD Values | Precision Risk |
+|----------|-------------------|----------------|
+| `POST /trades` | `realizedPnl: 16000.456789` | Multi-decimal USD |
+| `GET /pnl` | `netPnl: 18234.891234` | Summing 1000+ trades |
+| `GET /positions` | `totalValue: 45678.123456` | Quantity × Price |
+
+#### Decision Matrix
+
+| Scenario | Risk Level | Action |
+|----------|------------|--------|
+| MVP demo (<$100k portfolio) | Low | Use JavaScript `number` |
+| Portfolio >$1M | Medium | Migrate to `Decimal.js` |
+| Exchange integration | High | **Required** - price feeds have 12 decimals |
+| Tax reporting | High | **Required** - must match broker exactly |
+
+#### Production Fix
 
 ```typescript
 import Decimal from 'decimal.js';
-const pnl = new Decimal(sellPrice).minus(buyPrice).times(quantity);
+
+// Replace all financial math
+const pnl = new Decimal(sellPrice)
+  .minus(buyPrice)
+  .times(quantity);
+  
+// API returns clean decimals
+return { realizedPnl: pnl.toNumber() };
 ```
+
+**Current Status**: Documented limitation. MVP scale validated by test suite.
 
 ---
 
