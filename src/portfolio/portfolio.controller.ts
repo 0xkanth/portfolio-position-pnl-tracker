@@ -7,6 +7,7 @@ import { PortfolioResponseDto } from './dto/portfolio-response.dto';
 import { PnlResponseDto } from './dto/pnl-response.dto';
 import { UpdatePriceDto, BulkUpdatePricesDto } from './dto/update-price.dto';
 import { MarketPricesResponseDto } from './dto/market-prices-response.dto';
+import { toNumber } from '../common/utils/decimal.util';
 
 @Controller('portfolio')
 export class PortfolioController {
@@ -34,8 +35,8 @@ export class PortfolioController {
         orderId: existingTrade.orderId,
         symbol: existingTrade.symbol,
         side: existingTrade.side,
-        price: existingTrade.price,
-        quantity: existingTrade.quantity,
+        price: toNumber(existingTrade.price),
+        quantity: toNumber(existingTrade.quantity),
         executionTimestamp: existingTrade.executionTimestamp.toISOString(),
         createdAt: existingTrade.createdAt?.toISOString(),
         message: 'Trade already recorded (idempotent)',
@@ -51,8 +52,8 @@ export class PortfolioController {
       orderId: trade.orderId,
       symbol: trade.symbol,
       side: trade.side,
-      price: trade.price,
-      quantity: trade.quantity,
+      price: toNumber(trade.price),
+      quantity: toNumber(trade.quantity),
       executionTimestamp: trade.executionTimestamp.toISOString(),
       createdAt: trade.createdAt?.toISOString(),
       message: 'Trade recorded successfully',

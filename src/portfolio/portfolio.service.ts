@@ -5,9 +5,11 @@ import { CreateTradeDto } from './dto/create-trade.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { PortfolioStorageService } from './portfolio-storage.service';
 import { MarketPriceService } from '../market-price/market-price.service';
+import Decimal from 'decimal.js';
+import { toDecimal } from '../common/utils/decimal.util';
 
-// Handles trade recording and FIFO matching logic.
-// Storage and pricing delegated to separate services.
+// Trade recording and FIFO matching with Decimal.js precision.
+// All financial calculations use exact decimal arithmetic.
 @Injectable()
 export class PortfolioService {
   constructor(
@@ -16,12 +18,8 @@ export class PortfolioService {
   ) {}
 
   /**
-   * Records a new trade and updates position state.
+   * Records trade and updates position state.
    * Idempotent - duplicate tradeId returns existing record.
-   * 
-   * @param createTradeDto - Trade details from external order execution
-   * @returns Persisted trade entity
-   * @throws BadRequestException if sell quantity exceeds position
    */
   addTrade(createTradeDto: CreateTradeDto): Trade {
     const existingTrade = this.storage.findTradeByTradeId(createTradeDto.tradeId);
@@ -35,8 +33,8 @@ export class PortfolioService {
       orderId: createTradeDto.orderId,
       symbol: createTradeDto.symbol,
       side: createTradeDto.side,
-      price: createTradeDto.price,
-      quantity: createTradeDto.quantity,
+      price: toDecimal(createTradeDto.price),
+      quantity: toDecimal(createTradeDto.quantity),
       executionTimestamp: new Date(createTradeDto.executionTimestamp),
       createdAt: new Date(),
     };
@@ -47,11 +45,9 @@ export class PortfolioService {
     return trade;
   }
 
-  /**
-   * Updates position state after trade execution.
-   * Buy: adds to FIFO queue, recalcs avg entry price
-   * Sell: consumes lots via FIFO matching, records realized P&L
-   */
+  // Updates position state after trade execution.
+  // Buy: adds to FIFO queue, recalcs avg entry.
+  // Sell: consumes lots via FIFO, records realized P&L.
   private updatePosition(trade: Trade): void {
     const { symbol, side } = trade;
 
@@ -60,8 +56,8 @@ export class PortfolioService {
       position = {
         symbol,
         fifoQueue: [],
-        totalQuantity: 0,
-        averageEntryPrice: 0,
+        totalQuantity: new Decimal(0),
+        averageEntryPrice: new Decimal(0),
       };
     }
 
@@ -74,10 +70,7 @@ export class PortfolioService {
     this.storage.savePosition(position);
   }
 
-  /**
-   * Adds buy trade to position's FIFO queue.
-   * Recalculates average entry price across all lots.
-   */
+  // Adds buy to FIFO queue and recalculates average entry price.
   private handleBuy(position: Position, trade: Trade): void {
     position.fifoQueue.push({
       quantity: trade.quantity,
@@ -85,32 +78,31 @@ export class PortfolioService {
       tradeId: trade.id,
     });
 
-    position.totalQuantity += trade.quantity;
-    const totalCost = position.fifoQueue.reduce((sum, lot) => sum + lot.quantity * lot.price, 0);
-    position.averageEntryPrice = totalCost / position.totalQuantity;
+    position.totalQuantity = position.totalQuantity.plus(trade.quantity);
+    const totalCost = position.fifoQueue.reduce(
+      (sum, lot) => sum.plus(lot.quantity.times(lot.price)),
+      new Decimal(0)
+    );
+    position.averageEntryPrice = totalCost.dividedBy(position.totalQuantity);
   }
 
-  /**
-   * Consumes position lots via FIFO matching.
-   * Records realized P&L for each matched lot.
-   * Supports partial lot consumption.
-   * 
-   * @throws BadRequestException if position quantity insufficient
-   */
+  // Consumes lots via FIFO, records realized P&L per lot.
+  // Supports partial lot consumption.
   private handleSell(position: Position, trade: Trade): void {
     let remainingQuantity = trade.quantity;
 
-    if (position.totalQuantity < remainingQuantity) {
+    if (position.totalQuantity.lessThan(remainingQuantity)) {
       throw new BadRequestException(
-        `Insufficient quantity for ${trade.symbol}. Available: ${position.totalQuantity}, Requested: ${remainingQuantity}`,
+        `Insufficient quantity for ${trade.symbol}. Available: ${position.totalQuantity.toString()}, Requested: ${remainingQuantity.toString()}`,
       );
     }
-    while (remainingQuantity > 0 && position.fifoQueue.length > 0) {
+    
+    while (remainingQuantity.greaterThan(0) && position.fifoQueue.length > 0) {
       const oldestLot = position.fifoQueue[0];
 
-      if (oldestLot.quantity <= remainingQuantity) {
+      if (oldestLot.quantity.lessThanOrEqualTo(remainingQuantity)) {
         // full lot consumption
-        const pnl = (trade.price - oldestLot.price) * oldestLot.quantity;
+        const pnl = trade.price.minus(oldestLot.price).times(oldestLot.quantity);
 
         this.storage.savePnlRecord({
           symbol: trade.symbol,
@@ -121,12 +113,12 @@ export class PortfolioService {
           timestamp: trade.executionTimestamp,
         });
 
-        remainingQuantity -= oldestLot.quantity;
+        remainingQuantity = remainingQuantity.minus(oldestLot.quantity);
         position.fifoQueue.shift();
       } else {
         // partial lot
         const soldQuantity = remainingQuantity;
-        const pnl = (trade.price - oldestLot.price) * soldQuantity;
+        const pnl = trade.price.minus(oldestLot.price).times(soldQuantity);
 
         this.storage.savePnlRecord({
           symbol: trade.symbol,
@@ -137,19 +129,22 @@ export class PortfolioService {
           timestamp: trade.executionTimestamp,
         });
 
-        oldestLot.quantity -= soldQuantity;
-        remainingQuantity = 0;
+        oldestLot.quantity = oldestLot.quantity.minus(soldQuantity);
+        remainingQuantity = new Decimal(0);
       }
     }
 
-    position.totalQuantity -= trade.quantity;
+    position.totalQuantity = position.totalQuantity.minus(trade.quantity);
 
     // recalc avg price for remaining lots
-    if (position.totalQuantity > 0) {
-      const totalCost = position.fifoQueue.reduce((sum, lot) => sum + lot.quantity * lot.price, 0);
-      position.averageEntryPrice = totalCost / position.totalQuantity;
+    if (position.totalQuantity.greaterThan(0)) {
+      const totalCost = position.fifoQueue.reduce(
+        (sum, lot) => sum.plus(lot.quantity.times(lot.price)),
+        new Decimal(0)
+      );
+      position.averageEntryPrice = totalCost.dividedBy(position.totalQuantity);
     } else {
-      position.averageEntryPrice = 0;
+      position.averageEntryPrice = new Decimal(0);
     }
   }
 

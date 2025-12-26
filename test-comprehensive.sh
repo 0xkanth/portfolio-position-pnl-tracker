@@ -3,13 +3,13 @@
 API_URL="http://localhost:3000"
 
 echo ""
-echo "COMPREHENSIVE FINANCIAL CORRECTNESS TEST - FIFO"
-echo "================================================"
+echo "FIFO FINANCIAL CORRECTNESS TEST"
+echo "================================"
 echo ""
 
-echo "Resetting portfolio to clean state..."
+echo "Resetting portfolio..."
 curl -s -X POST "$API_URL/portfolio/reset" > /dev/null
-echo "Portfolio reset complete"
+echo "Done"
 echo ""
 
 echo "Initializing market prices..."
@@ -17,31 +17,70 @@ echo "Initializing market prices..."
 echo ""
 
 echo "="
-echo "TEST 1: Complex FIFO with Multiple Lots and Partial Sells"
+echo "TEST 1: Mixed Decimal Precision"
 echo "="
 echo ""
-echo "Scenario: Buy 3 lots at different prices, sell in parts"
+
+# Buy: High-precision price and quantity
+echo "1. Buy 0.00123456 BTC @ \$43,234.567891"
+curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
+  -d '{"tradeId":"comp-001","orderId":"order-c1","symbol":"BTC","side":"buy","price":43234.567891,"quantity":0.00123456,"executionTimestamp":"2024-01-15T10:00:00Z"}' > /dev/null
+
+# Buy: Clean values for contrast
+echo "2. Buy 1.5 ETH @ \$2,987.65"
+curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
+  -d '{"tradeId":"comp-002","orderId":"order-c2","symbol":"ETH","side":"buy","price":2987.65,"quantity":1.5,"executionTimestamp":"2024-01-15T10:05:00Z"}' > /dev/null
+
+echo ""
+echo "Portfolio after 2 buys:"
+PORTFOLIO=$(curl -s "$API_URL/portfolio/positions")
+echo "$PORTFOLIO" | jq -r '.positions[] | "   \(.symbol): \(.totalQuantity) @ avg \(.averageEntryPrice)"'
+
+echo ""
+echo "="
+echo "Sell high-precision BTC @ \$45,678.912345"
+echo "="
+echo ""
+
+# Sell: High-precision sell
+curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
+  -d '{"tradeId":"comp-003","orderId":"order-c3","symbol":"BTC","side":"sell","price":45678.912345,"quantity":0.00123456,"executionTimestamp":"2024-01-15T11:00:00Z"}' > /dev/null
+
+echo "PnL after selling 0.00123456 BTC:"
+PNL=$(curl -s "$API_URL/portfolio/pnl")
+REALIZED=$(echo "$PNL" | jq -r '.realizedPnl[0].realizedPnl')
+CLOSED_QTY=$(echo "$PNL" | jq -r '.realizedPnl[0].closedQuantity')
+
+echo ""
+echo "CHECK: P&L calculation:"
+echo "  (45678.912345 - 43234.567891) × 0.00123456 ≈ \$3.02"
+echo "  Actual = \$$REALIZED"
+echo ""
+
+echo "="
+echo "TEST 2: Multi-lot FIFO with Partial Sells"
+echo "="
 echo ""
 
 # Buy Lot 1: 2 BTC @ $30,000 (Cost: $60,000)
-echo "1. Buy 2 BTC @ \$30,000"
+echo "1. Buy 2 SOL @ \$30,000"
 curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
-  -d '{"tradeId":"comp-001","orderId":"order-c1","symbol":"BTC","side":"buy","price":30000,"quantity":2,"executionTimestamp":"2024-01-15T10:00:00Z"}' > /dev/null
+  -d '{"tradeId":"comp-004","orderId":"order-c4","symbol":"SOL","side":"buy","price":30000,"quantity":2,"executionTimestamp":"2024-01-15T12:00:00Z"}' > /dev/null
 
 # Buy Lot 2: 3 BTC @ $35,000 (Cost: $105,000)
-echo "2. Buy 3 BTC @ \$35,000"
+echo "2. Buy 3 SOL @ \$35,000"
 curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
-  -d '{"tradeId":"comp-002","orderId":"order-c2","symbol":"BTC","side":"buy","price":35000,"quantity":3,"executionTimestamp":"2024-01-15T10:05:00Z"}' > /dev/null
+  -d '{"tradeId":"comp-005","orderId":"order-c5","symbol":"SOL","side":"buy","price":35000,"quantity":3,"executionTimestamp":"2024-01-15T12:05:00Z"}' > /dev/null
 
 # Buy Lot 3: 1 BTC @ $40,000 (Cost: $40,000)
-echo "3. Buy 1 BTC @ \$40,000"
+echo "3. Buy 1 SOL @ \$40,000"
 curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
-  -d '{"tradeId":"comp-003","orderId":"order-c3","symbol":"BTC","side":"buy","price":40000,"quantity":1,"executionTimestamp":"2024-01-15T10:10:00Z"}' > /dev/null
+  -d '{"tradeId":"comp-006","orderId":"order-c6","symbol":"SOL","side":"buy","price":40000,"quantity":1,"executionTimestamp":"2024-01-15T12:10:00Z"}' > /dev/null
 
 echo ""
 echo "Portfolio after 3 buys:"
-PORTFOLIO=$(curl -s "$API_URL/portfolio/positions")
-echo "$PORTFOLIO" | jq -r '.positions[] | "   \(.symbol): \(.totalQuantity) BTC @ avg \(.averageEntryPrice)"'
+PORTFOLIO=$(curl -s "$API_URL/portfolio/positions?symbol=SOL")
+echo "$PORTFOLIO" | jq -r '.positions[] | "   \(.symbol): \(.totalQuantity) @ avg \(.averageEntryPrice)"'
 TOTAL_QTY=$(echo "$PORTFOLIO" | jq -r '.positions[0].totalQuantity')
 AVG_PRICE=$(echo "$PORTFOLIO" | jq -r '.positions[0].averageEntryPrice')
 
@@ -49,7 +88,7 @@ AVG_PRICE=$(echo "$PORTFOLIO" | jq -r '.positions[0].averageEntryPrice')
 echo ""
 echo "CHECK: Verification:"
 echo "  Total Cost = \$60,000 + \$105,000 + \$40,000 = \$205,000"
-echo "  Total Qty = 2 + 3 + 1 = 6 BTC"
+echo "  Total Qty = 2 + 3 + 1 = 6 SOL"
 echo "  Expected Avg = \$205,000 / 6 = \$34,166.67"
 echo "  Actual Avg = \$$AVG_PRICE"
 
@@ -61,23 +100,23 @@ fi
 
 echo ""
 echo "="
-echo "Sell 4 BTC @ \$45,000 (Should consume Lot 1 entirely + 2 from Lot 2)"
+echo "Sell 4 SOL @ \$45,000 (Should consume Lot 1 entirely + 2 from Lot 2)"
 echo "="
 echo ""
 
 # Sell 4 BTC @ $45,000
 # FIFO: Should sell 2 BTC from Lot 1 @ 30k, then 2 BTC from Lot 2 @ 35k
 curl -s -X POST "$API_URL/portfolio/trades" -H "Content-Type: application/json" \
-  -d '{"tradeId":"comp-004","orderId":"order-c4","symbol":"BTC","side":"sell","price":45000,"quantity":4,"executionTimestamp":"2024-01-15T11:00:00Z"}' > /dev/null
+  -d '{"tradeId":"comp-007","orderId":"order-c7","symbol":"SOL","side":"sell","price":45000,"quantity":4,"executionTimestamp":"2024-01-15T13:00:00Z"}' > /dev/null
 
-echo "PnL after selling 4 BTC @ \$45,000:"
-PNL=$(curl -s "$API_URL/portfolio/pnl")
+echo "PnL after selling 4 SOL @ \$45,000:"
+PNL=$(curl -s "$API_URL/portfolio/pnl?symbols=SOL")
 REALIZED=$(echo "$PNL" | jq -r '.realizedPnl[0].realizedPnl')
 CLOSED_QTY=$(echo "$PNL" | jq -r '.realizedPnl[0].closedQuantity')
 
 echo ""
 echo "CHECK: FIFO Calculation:"
-echo "  Lot 1: Sell 2 BTC bought @ \$30k, sold @ \$45k"
+echo "  Lot 1: Sell 2 SOL bought @ \$30k, sold @ \$45k"
 echo "         PnL = (45,000 - 30,000) × 2 = \$30,000"
 echo "  Lot 2: Sell 2 BTC bought @ \$35k, sold @ \$45k"
 echo "         PnL = (45,000 - 35,000) × 2 = \$20,000"

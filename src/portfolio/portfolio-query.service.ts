@@ -3,8 +3,10 @@ import { PortfolioStorageService } from './portfolio-storage.service';
 import { MarketPriceService } from '../market-price/market-price.service';
 import { PnlResponseDto } from './dto/pnl-response.dto';
 import { PortfolioResponseDto } from './dto/portfolio-response.dto';
+import Decimal from 'decimal.js';
+import { toDecimal, toNumber } from '../common/utils/decimal.util';
 
-// Read-only operations for portfolio data.
+// Read-only queries with Decimal precision.
 // CQRS pattern - queries separated from mutations.
 @Injectable()
 export class PortfolioQueryService {
@@ -13,13 +15,8 @@ export class PortfolioQueryService {
     private readonly marketPriceService: MarketPriceService,
   ) {}
 
-  /**
-   * Returns current holdings with unrealized P&L.
-   * Excludes closed positions (totalQuantity = 0).
-   * Uses latest market price or entry price as fallback.
-   * 
-   * @param symbols - Optional filter for specific symbols
-   */
+  // Returns current holdings with unrealized P&L.
+  // Excludes closed positions, uses market price or entry price fallback.
   getPortfolio(symbols?: string[]): PortfolioResponseDto {
     let positions = this.storage.getAllPositions();
     
@@ -28,19 +25,20 @@ export class PortfolioQueryService {
       positions = positions.filter((pos) => symbolSet.has(pos.symbol));
     }
     const positionsWithPnl = positions
-      .filter((pos) => pos.totalQuantity > 0)
+      .filter((pos) => pos.totalQuantity.greaterThan(0))
       .map((pos) => {
-        const currentPrice = this.marketPriceService.getPrice(pos.symbol) || pos.averageEntryPrice;
-        const currentValue = currentPrice * pos.totalQuantity;
-        const unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.totalQuantity;
+        const marketPrice = this.marketPriceService.getPrice(pos.symbol);
+        const currentPrice = marketPrice ? toDecimal(marketPrice) : pos.averageEntryPrice;
+        const currentValue = currentPrice.times(pos.totalQuantity);
+        const unrealizedPnl = currentPrice.minus(pos.averageEntryPrice).times(pos.totalQuantity);
 
         return {
           symbol: pos.symbol,
-          totalQuantity: pos.totalQuantity,
-          averageEntryPrice: Number(pos.averageEntryPrice.toFixed(2)),
-          currentPrice,
-          currentValue: Number(currentValue.toFixed(2)),
-          unrealizedPnl: Number(unrealizedPnl.toFixed(2)),
+          totalQuantity: toNumber(pos.totalQuantity),
+          averageEntryPrice: toNumber(pos.averageEntryPrice),
+          currentPrice: toNumber(currentPrice),
+          currentValue: toNumber(currentValue),
+          unrealizedPnl: toNumber(unrealizedPnl),
         };
       });
 
@@ -49,24 +47,19 @@ export class PortfolioQueryService {
 
     return {
       positions: positionsWithPnl,
-      totalValue: Number(totalValue.toFixed(2)),
-      totalUnrealizedPnl: Number(totalUnrealizedPnl.toFixed(2)),
+      totalValue: parseFloat(totalValue.toFixed(2)),
+      totalUnrealizedPnl: parseFloat(totalUnrealizedPnl.toFixed(2)),
     };
   }
 
-  /**
-   * Calculates realized + unrealized P&L across portfolio.
-   * Realized: cached aggregates from closed trades (O(1) lookup)
-   * Unrealized: current positions vs market price
-   * 
-   * @param symbols - Optional filter for specific symbols
-   */
+  // Calculates realized + unrealized P&L across portfolio.
+  // Realized: O(1) cached aggregates. Unrealized: current positions vs market.
   getPnl(symbols?: string[]): PnlResponseDto {
     const realizedBySymbol = this.storage.getRealizedPnlAggregates();
     let realizedPnl = Array.from(realizedBySymbol.entries()).map(([symbol, data]) => ({
       symbol,
-      realizedPnl: Number(data.totalPnl.toFixed(2)),
-      closedQuantity: data.totalQuantity,
+      realizedPnl: toNumber(data.totalPnl),
+      closedQuantity: toNumber(data.totalQuantity),
     }));
 
     if (symbols && symbols.length > 0) {
@@ -83,17 +76,18 @@ export class PortfolioQueryService {
     }
 
     const unrealizedPnl = positions
-      .filter((pos) => pos.totalQuantity > 0)
+      .filter((pos) => pos.totalQuantity.greaterThan(0))
       .map((pos) => {
-        const currentPrice = this.marketPriceService.getPrice(pos.symbol) || pos.averageEntryPrice;
-        const unrealizedPnl = (currentPrice - pos.averageEntryPrice) * pos.totalQuantity;
+        const marketPrice = this.marketPriceService.getPrice(pos.symbol);
+        const currentPrice = marketPrice ? toDecimal(marketPrice) : pos.averageEntryPrice;
+        const unrealizedPnl = currentPrice.minus(pos.averageEntryPrice).times(pos.totalQuantity);
 
         return {
           symbol: pos.symbol,
-          unrealizedPnl: Number(unrealizedPnl.toFixed(2)),
-          currentQuantity: pos.totalQuantity,
-          averageEntryPrice: Number(pos.averageEntryPrice.toFixed(2)),
-          currentPrice,
+          unrealizedPnl: toNumber(unrealizedPnl),
+          currentQuantity: toNumber(pos.totalQuantity),
+          averageEntryPrice: toNumber(pos.averageEntryPrice),
+          currentPrice: toNumber(currentPrice),
         };
       });
 
@@ -103,9 +97,9 @@ export class PortfolioQueryService {
     return {
       realizedPnl,
       unrealizedPnl,
-      totalRealizedPnl: Number(totalRealizedPnl.toFixed(2)),
-      totalUnrealizedPnl: Number(totalUnrealizedPnl.toFixed(2)),
-      netPnl: Number((totalRealizedPnl + totalUnrealizedPnl).toFixed(2)),
+      totalRealizedPnl: parseFloat(totalRealizedPnl.toFixed(2)),
+      totalUnrealizedPnl: parseFloat(totalUnrealizedPnl.toFixed(2)),
+      netPnl: parseFloat((totalRealizedPnl + totalUnrealizedPnl).toFixed(2)),
     };
   }
 

@@ -5,6 +5,7 @@ import { MarketPriceService } from '../market-price/market-price.service';
 import { TradeSide } from './entities/trade.entity';
 import { BadRequestException } from '@nestjs/common';
 import { CreateTradeDto } from './dto/create-trade.dto';
+import Decimal from 'decimal.js';
 
 describe('PortfolioService - Mutations', () => {
   let service: PortfolioService;
@@ -120,8 +121,8 @@ describe('PortfolioService - Mutations', () => {
 
       // Verify position was updated correctly (oldest lot removed)
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1);
-      expect(position!.averageEntryPrice).toBe(42000); // Only second lot remains
+      expect(position!.totalQuantity.toNumber()).toBe(1);
+      expect(position!.averageEntryPrice.toNumber()).toBe(42000); // Only second lot remains
     });
 
     it('should handle partial lot consumption', () => {
@@ -148,8 +149,8 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1);
-      expect(position!.averageEntryPrice).toBe(42000);
+      expect(position!.totalQuantity.toNumber()).toBe(1);
+      expect(position!.averageEntryPrice.toNumber()).toBe(42000);
     });
 
     it('should update position correctly after exact quantity sell', () => {
@@ -168,7 +169,7 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(0); // Position closed
+      expect(position!.totalQuantity.toNumber()).toBe(0); // Position closed
       expect(position!.fifoQueue).toHaveLength(0); // No lots remaining
     });
   });
@@ -207,7 +208,7 @@ describe('PortfolioService - Mutations', () => {
       service.addTrade(dto); // Duplicate
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(1); // Not 2!
+      expect(position!.totalQuantity.toNumber()).toBe(1); // Not 2!
     });
   });
 
@@ -237,8 +238,8 @@ describe('PortfolioService - Mutations', () => {
       const btcPosition = storage.getPosition('BTC');
       const ethPosition = storage.getPosition('ETH');
 
-      expect(btcPosition!.totalQuantity).toBe(0.5);
-      expect(ethPosition!.totalQuantity).toBe(5);
+      expect(btcPosition!.totalQuantity.toNumber()).toBe(0.5);
+      expect(ethPosition!.totalQuantity.toNumber()).toBe(5);
     });
   });
 
@@ -261,8 +262,8 @@ describe('PortfolioService - Mutations', () => {
       const ethAggregate = aggregates.get('ETH');
 
       expect(ethAggregate).toBeDefined();
-      expect(ethAggregate!.totalPnl).toBe(600); // (2200-2000)*3
-      expect(ethAggregate!.totalQuantity).toBe(3);
+      expect(ethAggregate!.totalPnl.toNumber()).toBe(600); // (2200-2000)*3
+      expect(ethAggregate!.totalQuantity.toNumber()).toBe(3);
     });
 
     it('should accumulate PnL across multiple sells', () => {
@@ -271,18 +272,18 @@ describe('PortfolioService - Mutations', () => {
       
       let aggregates = storage.getRealizedPnlAggregates();
       let btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(1000); // (42000-40000)*0.5
+      expect(btcAggregate!.totalPnl.toNumber()).toBe(1000); // (42000-40000)*0.5
 
       service.addTrade(createTestTradeDto({ symbol: 'BTC', side: TradeSide.SELL, price: 43000, quantity: 0.5 }));
       
       aggregates = storage.getRealizedPnlAggregates();
       btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(2500); // 1000 + (43000-40000)*0.5
+      expect(btcAggregate!.totalPnl.toNumber()).toBe(2500); // 1000 + (43000-40000)*0.5
     });
   });
 
-  describe('Edge cases', () => {
-    it('should handle decimal quantities', () => {
+  describe('Decimal precision tests', () => {
+    it('should handle clean decimal quantities', () => {
       service.addTrade(createTestTradeDto({
         symbol: 'BTC',
         side: TradeSide.BUY,
@@ -291,27 +292,118 @@ describe('PortfolioService - Mutations', () => {
       }));
 
       const position = storage.getPosition('BTC');
-      expect(position!.totalQuantity).toBe(0.5);
+      expect(position!.totalQuantity.toNumber()).toBe(0.5);
     });
 
-    it('should handle negative PnL (losses)', () => {
+    it('should handle high-precision decimal prices', () => {
       service.addTrade(createTestTradeDto({
         symbol: 'BTC',
         side: TradeSide.BUY,
-        price: 45000,
-        quantity: 1,
+        price: 43234.567891234,
+        quantity: 0.00123456,
       }));
 
       service.addTrade(createTestTradeDto({
         symbol: 'BTC',
         side: TradeSide.SELL,
-        price: 40000,
-        quantity: 1,
+        price: 45678.912345678,
+        quantity: 0.00123456,
       }));
 
       const aggregates = storage.getRealizedPnlAggregates();
       const btcAggregate = aggregates.get('BTC');
-      expect(btcAggregate!.totalPnl).toBe(-5000);
+      // (45678.912345678 - 43234.567891234) × 0.00123456 = 3.01768988...
+      expect(btcAggregate!.totalPnl.toNumber()).toBeCloseTo(3.01768989, 8);
+    });
+
+    it('should handle mixed clean and messy decimals', () => {
+      // Clean whole number price, messy decimal quantity
+      service.addTrade(createTestTradeDto({
+        symbol: 'ETH',
+        side: TradeSide.BUY,
+        price: 3000,
+        quantity: 1.23456789,
+      }));
+
+      // Messy price, clean quantity
+      service.addTrade(createTestTradeDto({
+        symbol: 'ETH',
+        side: TradeSide.BUY,
+        price: 2987.654321,
+        quantity: 2.5,
+      }));
+
+      const position = storage.getPosition('ETH');
+      expect(position!.totalQuantity.toNumber()).toBeCloseTo(3.73456789, 8);
+      // avg = (3000×1.23456789 + 2987.654321×2.5) / 3.73456789 = 2991.735537...
+      expect(position!.averageEntryPrice.toNumber()).toBeCloseTo(2991.74, 2);
+    });
+
+    it('should handle micro-amounts with large prices', () => {
+      service.addTrade(createTestTradeDto({
+        symbol: 'BTC',
+        side: TradeSide.BUY,
+        price: 87250.123456,
+        quantity: 0.00000001,
+      }));
+
+      const position = storage.getPosition('BTC');
+      expect(position!.totalQuantity.toNumber()).toBe(0.00000001);
+      expect(position!.averageEntryPrice.toNumber()).toBeCloseTo(87250.123456, 6);
+    });
+
+    it('should accumulate P&L across mixed decimal trades', () => {
+      // Trade 1: Clean values
+      service.addTrade(createTestTradeDto({ symbol: 'SOL', side: TradeSide.BUY, price: 100, quantity: 10 }));
+      service.addTrade(createTestTradeDto({ symbol: 'SOL', side: TradeSide.SELL, price: 110, quantity: 5 }));
+      
+      // Trade 2: Messy decimals
+      service.addTrade(createTestTradeDto({ symbol: 'SOL', side: TradeSide.SELL, price: 115.678912, quantity: 2.5 }));
+      
+      const aggregates = storage.getRealizedPnlAggregates();
+      const solAggregate = aggregates.get('SOL');
+      // PnL1: (110-100)×5 = 50
+      // PnL2: (115.678912-100)×2.5 = 39.19728
+      expect(solAggregate!.totalPnl.toNumber()).toBeCloseTo(89.19728, 5);
+      expect(solAggregate!.totalQuantity.toNumber()).toBe(7.5);
+    });
+
+    it('should handle negative PnL with mixed decimals', () => {
+      service.addTrade(createTestTradeDto({
+        symbol: 'BTC',
+        side: TradeSide.BUY,
+        price: 45123.456789,
+        quantity: 0.123,
+      }));
+
+      service.addTrade(createTestTradeDto({
+        symbol: 'BTC',
+        side: TradeSide.SELL,
+        price: 40000.123456,
+        quantity: 0.123,
+      }));
+
+      const aggregates = storage.getRealizedPnlAggregates();
+      const btcAggregate = aggregates.get('BTC');
+      // (40000.123456 - 45123.456789) × 0.123 = -630.169999959
+      expect(btcAggregate!.totalPnl.toNumber()).toBeCloseTo(-630.17, 2);
+    });
+
+    it('should maintain precision across multiple FIFO lot matches', () => {
+      // 3 buys with different precisions
+      service.addTrade(createTestTradeDto({ symbol: 'ETH', side: TradeSide.BUY, price: 2500, quantity: 1 }));
+      service.addTrade(createTestTradeDto({ symbol: 'ETH', side: TradeSide.BUY, price: 2750.5, quantity: 1.5 }));
+      service.addTrade(createTestTradeDto({ symbol: 'ETH', side: TradeSide.BUY, price: 2999.999999, quantity: 0.75 }));
+
+      // Sell spanning all 3 lots
+      service.addTrade(createTestTradeDto({ symbol: 'ETH', side: TradeSide.SELL, price: 3100.123456, quantity: 3.25 }));
+
+      const aggregates = storage.getRealizedPnlAggregates();
+      const ethAggregate = aggregates.get('ETH');
+      // Lot1: (3100.123456-2500)×1 = 600.123456
+      // Lot2: (3100.123456-2750.5)×1.5 = 524.435184
+      // Lot3: (3100.123456-2999.999999)×0.75 = 75.092593...
+      expect(ethAggregate!.totalPnl.toNumber()).toBeCloseTo(1199.65, 2);
     });
   });
 });

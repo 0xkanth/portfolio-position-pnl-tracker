@@ -27,13 +27,14 @@ Crypto portfolio tracker with FIFO accounting, CQRS pattern, and P&L calculation
 | **Storage** | In-memory | PostgreSQL/TimescaleDB |
 | **Users** | Single user | Multi-tenant with JWT auth |
 | **Prices** | Manual API updates | WebSocket feeds (Binance/Coinbase) |
-| **Precision** | JavaScript `number` | `Decimal.js` for >$10M portfolios |
+| **Precision** | `Decimal.js` (8 decimal places) | Same |
 | **Symbols** | Uppercase (BTC, ETH) | Normalized + validated |
 | **Positions** | Long only | No short selling support |
 
 ### Stack: 
 - NestJS 10 
 - TypeScript 5 
+- **Decimal.js** (financial precision)
 - Jest 
 - Docker
 
@@ -152,10 +153,10 @@ erDiagram
 ```typescript
 positions.get("BTC") = {
   symbol: "BTC",
-  totalQuantity: 5,
+  totalQuantity: 0.00223456,
   fifoQueue: [
-    {qty: 2, price: 40000, tradeId: "t1"},  // oldest
-    {qty: 3, price: 42000, tradeId: "t2"}   // newest
+    {qty: 0.001, price: 43234.567891, tradeId: "t1"},  // oldest
+    {qty: 0.00123456, price: 45678.912345, tradeId: "t2"}   // newest
   ]
 }
 ```
@@ -181,73 +182,38 @@ positions.get("BTC") = {
 
 ### Data Flow Example
 
-**Scenario**: Buy 2 BTC @ \$40k, Buy 3 BTC @ \$42k, then Sell 4 BTC @ \$45k
-
-#### Step 1: BUY 2 BTC @ \$40,000
-
-Creates new position:
+#### Buy: 0.00123456 BTC @ \$43,234.567891
 ```typescript
 {
   symbol: "BTC",
-  totalQty: 2,
-  avgEntry: 40000,
-  fifoQueue: [{qty: 2, price: 40000, tradeId: "t1"}]
+  totalQty: 0.00123456,
+  avgEntry: 43234.567891,
+  fifoQueue: [{qty: 0.00123456, price: 43234.567891, tradeId: "t1"}]
 }
 ```
 
-#### Step 2: BUY 3 BTC @ \$42,000
-
-Appends to FIFO queue, recalculates weighted average:
+#### Buy: 1.5 ETH @ \$2,987.65
 ```typescript
 {
-  symbol: "BTC",
-  totalQty: 5,
-  avgEntry: 41200,  // (2×40k + 3×42k) / 5
-  fifoQueue: [
-    {qty: 2, price: 40000, tradeId: "t1"},  // oldest
-    {qty: 3, price: 42000, tradeId: "t2"}   // newest
-  ]
+  symbol: "ETH",
+  totalQty: 1.5,
+  avgEntry: 2987.65,
+  fifoQueue: [{qty: 1.5, price: 2987.65, tradeId: "t2"}]
 }
 ```
 
-#### Step 3: SELL 4 BTC @ \$45,000
+#### Sell: 0.00123456 BTC @ \$45,678.912345
 
-FIFO matching consumes from queue front:
+| Match | Lot | PnL Calculation | Result |
+|-------|-----|-----------------|--------|
+| 1 | 0.00123456 @ \$43,234.567891 | (45678.912345 - 43234.567891) × 0.00123456 | \$3.02 |
 
-| Match | Lot Consumed | PnL Calculation | Result |
-|-------|--------------|-----------------|--------|
-| 1 | 2 BTC @ \$40k (entire lot) | (45k - 40k) × 2 | \$10,000 |
-| 2 | 2 of 3 BTC @ \$42k (partial) | (45k - 42k) × 2 | \$6,000 |
-
-**Total Realized PnL**: \$16,000 (cached in aggregate)
-
-**Remaining Position**:
-```typescript
-{
-  symbol: "BTC",
-  totalQty: 1,
-  avgEntry: 42000,
-  fifoQueue: [{qty: 1, price: 42000, tradeId: "t2"}]
-}
-```
-
-#### Step 4: GET /portfolio/positions
-
-Query computes unrealized PnL using current market price:
-
-| Position | Avg Entry | Current Price | Calculation | Unrealized PnL |
-|----------|-----------|---------------|-------------|----------------|
-| 1 BTC | \$42,000 | \$44,000 | (44k - 42k) × 1 | \$2,000 |
-
-#### Step 5: GET /portfolio/pnl
-
-Returns complete P&L breakdown:
-
+Exact: 3.01768988967838464, displayed as \$3.02
 ```json
 {
-  "realizedPnl": [{"symbol": "BTC", "realizedPnl": 16000}],
-  "unrealizedPnl": [{"symbol": "BTC", "unrealizedPnl": 2000}],
-  "netPnl": 18000
+  "realizedPnl": [{"symbol": "BTC", "realizedPnl": 3.02, "closedQuantity": 0.00123456}],
+  "unrealizedPnl": [{"symbol": "ETH", "unrealizedPnl": 0, "currentQuantity": 1.5}],
+  "netPnl": 3.02
 }
 ```
 
@@ -264,30 +230,30 @@ sequenceDiagram
     participant Service as PortfolioService<br/>(portfolio.service.ts)
     participant Storage as PortfolioStorageService<br/>(portfolio-storage.service.ts)
     
-    Client->>Controller: POST /portfolio/trades<br/>{side: "sell", quantity: 4, price: 45000}
+    Client->>Controller: POST /portfolio/trades<br/>{side: "sell", quantity: 0.001, price: 45678.912}
     Controller->>Controller: Validate CreateTradeDto
     Controller->>Service: addTrade(dto)
     
     Service->>Service: Check idempotency<br/>(tradeIdIndex.has(tradeId))
     Service->>Storage: getPosition(symbol)
-    Storage-->>Service: Position {fifoQueue: [2@40k, 3@42k]}
+    Storage-->>Service: Position {fifoQueue: [0.0005@43234.56, 0.0005@45678.91]}
     
     Note over Service: processSellTrade()<br/>(portfolio.service.ts:L127)
     
-    Service->>Service: Match lot 1: 2 BTC @ $40k<br/>PnL = (45k-40k)×2 = $10k
+    Service->>Service: Match lot 1: 0.0005 BTC @ $43,234.56<br/>PnL = (45678.91-43234.56)×0.0005 = $1.22
     Service->>Storage: addRealizedPnlRecord()<br/>(RealizedPnlRecord entity)
     Service->>Storage: updateRealizedPnlAggregate()<br/>(Map: symbol → aggregate)
     
-    Service->>Service: Match lot 2: 2 of 3 BTC @ $42k<br/>PnL = (45k-42k)×2 = $6k
+    Service->>Service: Match lot 2: 0.0005 BTC @ $45,678.91<br/>PnL = (45678.91-45678.91)×0.0005 = $0
     Service->>Storage: addRealizedPnlRecord()
     Service->>Storage: updateRealizedPnlAggregate()
     
-    Service->>Storage: updatePosition()<br/>(new queue: [1@42k])
+    Service->>Storage: updatePosition()<br/>(new queue: [])
     Service->>Storage: addTrade(trade)
     
     Storage-->>Service: Trade saved
     Service-->>Controller: TradeResponseDto
-    Controller-->>Client: 201 Created<br/>{message: "Trade recorded", realizedPnl: 16000}
+    Controller-->>Client: 201 Created<br/>{message: "Trade recorded", realizedPnl: 1.22}
 ```
 
 ### Read Path: Portfolio Query
@@ -325,9 +291,7 @@ sequenceDiagram
 
 ### P&L Calculation Details
 
-#### 1. Realized P&L (Locked-In)
-
-Permanent profit/loss from closed positions. Computed during SELL execution via FIFO lot matching.
+#### 1. Realized P&L
 
 **Formula** (per matched lot):
 
@@ -335,38 +299,42 @@ $$
 \text{Realized PnL}_{\text{lot}} = (\text{Sell Price} - \text{Lot Buy Price}) \times \text{Lot Quantity}
 $$
 
-**Example**: Selling 4 BTC @ \$45k against queue [2 BTC @ \$40k, 3 BTC @ \$42k]
+**Example 1**: High-precision decimals
 
-| Match | Calculation | P&L |
-|-------|-------------|-----|
-| Lot 1 (2 BTC @ \$40k) | (45k - 40k) × 2 | \$10,000 |
-| Lot 2 (2 of 3 BTC @ \$42k) | (45k - 42k) × 2 | \$6,000 |
-| **Total** | | **\$16,000** |
+| Trade | Values | Result |
+|-------|--------|--------|
+| Buy | 0.00123456 BTC @ \$43,234.567891 | Cost basis set |
+| Sell | 0.00123456 BTC @ \$45,678.912345 | P&L = (45678.912345 - 43234.567891) × 0.00123456 |
+| **P&L** | **Exact: 3.01768988967838464** | **USD: \$3.02** |
+
+**Example 2**: Mixed clean and messy values
+
+| Lot | Buy Price | Quantity | Sell Price | P&L |
+|-----|-----------|----------|------------|-----|
+| 1 | \$100 (clean) | 10 (clean) | \$115.678912 (messy) | \$156.79 |
+| 2 | \$2987.654321 (messy) | 2.5 (clean) | \$3100.5 (clean) | \$282.11 |
 
 ---
 
-#### 2. Unrealized P&L (Mark-to-Market)
+#### 2. Unrealized P&L
 
-Floating profit/loss on open positions. Recomputed on-demand during READ operations.
-
-**Formula** (per position):
+**Formula**:
 
 $$
 \text{Unrealized PnL} = (\text{Current Market Price} - \text{Average Entry Price}) \times \text{Total Quantity Held}
 $$
 
-**Example**: Hold 1 BTC with \$42k average entry
+**Example**: Mixed precision portfolio
 
-| Current Price | Calculation | Unrealized P&L |
-|---------------|-------------|----------------|
-| \$44,000 | (44k - 42k) × 1 | \$2,000 |
-| \$41,000 | (41k - 42k) × 1 | -\$1,000 (loss) |
+| Symbol | Quantity | Avg Entry | Current Price | Unrealized P&L |
+|--------|----------|-----------|---------------|----------------|
+| BTC | 0.00000123 | \$87,250.123456 | \$90,000 | \$0.003382... ≈ \$0.00 |
+| ETH | 1.5 | \$2,987.65 | \$3,100 | \$168.53 |
+| SOL | 10.123456 | \$100.5 | \$95.25 | -\$53.15 (loss) |
 
 ---
 
 #### 3. Average Entry Price
-
-Weighted average price across all buy lots in current position.
 
 **Formula**:
 
@@ -374,31 +342,38 @@ $$
 \text{Average Entry Price} = \frac{\sum_{i=1}^{n} (\text{Lot}_i.\text{price} \times \text{Lot}_i.\text{quantity})}{\text{Total Quantity Held}}
 $$
 
-**Example**: After BUY 2 BTC @ \$40k, BUY 3 BTC @ \$42k
+**Example**: Mixed decimal buys
 
-$$
-\text{Average Entry} = \frac{(40{,}000 \times 2) + (42{,}000 \times 3)}{5} = \$41{,}200
-$$
-
-After selling 4 BTC, remaining 1 BTC from second lot:
-
-$$
-\text{Average Entry} = \$42{,}000
-$$
-
-**Properties**: Recalculated after every BUY, cached for fast reads, only includes current FIFO queue lots.
+| Buy | Calculation Component |
+|-----|----------------------|
+| 1 ETH @ \$3,000 | 3000 × 1 = 3000 |
+| 2.5 ETH @ \$2,987.654321 | 2987.654321 × 2.5 = 7469.13580250 |
+| **Total** | 7469.13580250 / 3.5 = **\$2,134.03** |
 
 ---
 
-#### 4. Net P&L (Total Performance)
-
-**Formula**:
+#### 4. Net P&L
 
 $$
 \text{Net PnL} = \text{Total Realized PnL} + \text{Total Unrealized PnL}
 $$
 
-**Example**: Realized \$16k + Unrealized \$2k = **Net \$18k**
+**Example**: Mixed precision portfolio
+
+```json
+{
+  "realizedPnl": [
+    {"symbol": "BTC", "realizedPnl": 3.02, "closedQuantity": 0.00123456},
+    {"symbol": "SOL", "realizedPnl": 156.79, "closedQuantity": 10}
+  ],
+  "unrealizedPnl": [
+    {"symbol": "ETH", "unrealizedPnl": 168.53, "currentQuantity": 1.5}
+  ],
+  "totalRealizedPnl": 159.81,
+  "totalUnrealizedPnl": 168.53,
+  "netPnl": 328.34
+}
+```
 
 ---
 
@@ -408,61 +383,10 @@ $$
 |----------|----------|--------|
 | **Partial Lot** | Sell < oldest lot → updates lot in-place (e.g., 5 BTC → 3 BTC remaining) | Preserves cost basis |
 | **Multi-Lot Match** | Sell spans multiple lots → creates separate PnL record per lot | Tax audit trail |
-| **Fractional Amounts** | JavaScript `number` supports 8+ decimals (e.g., 0.5 BTC, 1.75 BTC) | Safe for MVP; use `Decimal.js` for >\$10M portfolios |
+| **Fractional Amounts** | `Decimal.js` handles up to 20 significant digits (e.g., 0.00000123 BTC) | Exact precision |
 | **Overselling** | Validates balance before execution → HTTP 400 if insufficient | No short positions |
 | **Zero Position** | Selling entire position → removes from Map, P&L history persists | Clean memory |
 | **Missing Prices** | No current price → skips unrealized PnL for that symbol | Graceful degradation |
-
----
-
-### Precision Considerations
-
-**Problem**: USD amounts contain decimals → JavaScript `number` loses precision
-
-#### Where It Happens
-
-```typescript
-// Input: Clean numbers
-price: 43234.567891      // Exchange feed (8 decimals)
-quantity: 0.00123        // Crypto amount
-
-// Output: USD with many decimals
-pnl = (43234.567891 - 42100.123456) × 0.00123
-    = 1.3946706... USD   // ⚠️ This value gets returned in API
-```
-
-#### Impact on API Responses
-
-| Endpoint | Returns USD Values | Precision Risk |
-|----------|-------------------|----------------|
-| `POST /trades` | `realizedPnl: 16000.456789` | Multi-decimal USD |
-| `GET /pnl` | `netPnl: 18234.891234` | Summing 1000+ trades |
-| `GET /positions` | `totalValue: 45678.123456` | Quantity × Price |
-
-#### Decision Matrix
-
-| Scenario | Risk Level | Action |
-|----------|------------|--------|
-| MVP demo (<$100k portfolio) | Low | Use JavaScript `number` |
-| Portfolio >$1M | Medium | Migrate to `Decimal.js` |
-| Exchange integration | High | **Required** - price feeds have 12 decimals |
-| Tax reporting | High | **Required** - must match broker exactly |
-
-#### Production Fix
-
-```typescript
-import Decimal from 'decimal.js';
-
-// Replace all financial math
-const pnl = new Decimal(sellPrice)
-  .minus(buyPrice)
-  .times(quantity);
-  
-// API returns clean decimals
-return { realizedPnl: pnl.toNumber() };
-```
-
-**Current Status**: Documented limitation. MVP scale validated by test suite.
 
 ---
 
@@ -480,16 +404,29 @@ http://localhost:3000/portfolio/trades
 
 Record a new trade with FIFO accounting. Idempotent via `tradeId`.
 
-**Request**:
+**Request Example 1**: High-precision decimals
 ```json
 {
   "tradeId": "t1",
   "orderId": "o1",
   "symbol": "BTC",
   "side": "buy",
-  "price": 40000,
-  "quantity": 2,
+  "price": 43234.567891,
+  "quantity": 0.00123456,
   "executionTimestamp": "2024-01-15T10:00:00Z"
+}
+```
+
+**Request Example 2**: Clean values
+```json
+{
+  "tradeId": "t2",
+  "orderId": "o1",
+  "symbol": "ETH",
+  "side": "buy",
+  "price": 2987.65,
+  "quantity": 1.5,
+  "executionTimestamp": "2024-01-15T10:05:00Z"
 }
 ```
 
@@ -500,8 +437,8 @@ Record a new trade with FIFO accounting. Idempotent via `tradeId`.
   "tradeId": "t1",
   "symbol": "BTC",
   "side": "buy",
-  "price": 40000,
-  "quantity": 2,
+  "price": 43234.567891,
+  "quantity": 0.00123456,
   "message": "Trade recorded successfully",
   "duplicate": false
 }
@@ -532,31 +469,31 @@ Returns current holdings with unrealized P&L. Without parameters, returns ALL sy
   "positions": [
     {
       "symbol": "BTC",
-      "totalQuantity": 1,
-      "averageEntryPrice": 40000,
-      "currentPrice": 45000,
-      "currentValue": 45000,
-      "unrealizedPnl": 5000
+      "totalQuantity": 0.00123456,
+      "averageEntryPrice": 43234.567891,
+      "currentPrice": 45678.912345,
+      "currentValue": 56.40,
+      "unrealizedPnl": 3.02
     },
     {
       "symbol": "ETH",
-      "totalQuantity": 5,
-      "averageEntryPrice": 2800,
-      "currentPrice": 3000,
-      "currentValue": 15000,
-      "unrealizedPnl": 1000
+      "totalQuantity": 1.5,
+      "averageEntryPrice": 2987.65,
+      "currentPrice": 3100,
+      "currentValue": 4650,
+      "unrealizedPnl": 168.53
     },
     {
       "symbol": "SOL",
-      "totalQuantity": 10,
-      "averageEntryPrice": 90,
-      "currentPrice": 100,
-      "currentValue": 1000,
-      "unrealizedPnl": 100
+      "totalQuantity": 10.123456,
+      "averageEntryPrice": 100.5,
+      "currentPrice": 95.25,
+      "currentValue": 964.26,
+      "unrealizedPnl": -53.15
     }
   ],
-  "totalValue": 61000,
-  "totalUnrealizedPnl": 6100
+  "totalValue": 5670.68,
+  "totalUnrealizedPnl": 118.40
 }
 ```
 
@@ -566,15 +503,15 @@ Returns current holdings with unrealized P&L. Without parameters, returns ALL sy
   "positions": [
     {
       "symbol": "ETH",
-      "totalQuantity": 5,
-      "averageEntryPrice": 2800,
-      "currentPrice": 3000,
-      "currentValue": 15000,
-      "unrealizedPnl": 1000
+      "totalQuantity": 1.5,
+      "averageEntryPrice": 2987.65,
+      "currentPrice": 3100,
+      "currentValue": 4650,
+      "unrealizedPnl": 168.53
     }
   ],
-  "totalValue": 15000,
-  "totalUnrealizedPnl": 1000
+  "totalValue": 4650,
+  "totalUnrealizedPnl": 168.53
 }
 ```
 
@@ -600,36 +537,34 @@ Complete P&L breakdown with realized (locked-in) and unrealized (mark-to-market)
   "realizedPnl": [
     {
       "symbol": "BTC",
-      "realizedPnl": 5000,
-      "closedQuantity": 1
+      "realizedPnl": 3.02,
+      "closedQuantity": 0.00123456
+    },
+    {
+      "symbol": "SOL",
+      "realizedPnl": 156.79,
+      "closedQuantity": 10
     }
   ],
   "unrealizedPnl": [
     {
-      "symbol": "BTC",
-      "unrealizedPnl": 5000,
-      "currentQuantity": 1,
-      "averageEntryPrice": 40000,
-      "currentPrice": 45000
-    },
-    {
       "symbol": "ETH",
-      "unrealizedPnl": 1000,
-      "currentQuantity": 5,
-      "averageEntryPrice": 2800,
-      "currentPrice": 3000
+      "unrealizedPnl": 168.53,
+      "currentQuantity": 1.5,
+      "averageEntryPrice": 2987.65,
+      "currentPrice": 3100
     },
     {
       "symbol": "SOL",
-      "unrealizedPnl": 100,
-      "currentQuantity": 10,
-      "averageEntryPrice": 90,
-      "currentPrice": 100
+      "unrealizedPnl": -53.15,
+      "currentQuantity": 0.123456,
+      "averageEntryPrice": 100.5,
+      "currentPrice": 95.25
     }
   ],
-  "totalRealizedPnl": 5000,
-  "totalUnrealizedPnl": 6100,
-  "netPnl": 11100
+  "totalRealizedPnl": 159.81,
+  "totalUnrealizedPnl": 115.38,
+  "netPnl": 275.19
 }
 ```
 
@@ -639,29 +574,22 @@ Complete P&L breakdown with realized (locked-in) and unrealized (mark-to-market)
   "realizedPnl": [
     {
       "symbol": "BTC",
-      "realizedPnl": 5000,
-      "closedQuantity": 1
+      "realizedPnl": 3.02,
+      "closedQuantity": 0.00123456
     }
   ],
   "unrealizedPnl": [
     {
-      "symbol": "BTC",
-      "unrealizedPnl": 5000,
-      "currentQuantity": 1,
-      "averageEntryPrice": 40000,
-      "currentPrice": 45000
-    },
-    {
       "symbol": "ETH",
-      "unrealizedPnl": 1000,
-      "currentQuantity": 5,
-      "averageEntryPrice": 2800,
-      "currentPrice": 3000
+      "unrealizedPnl": 168.53,
+      "currentQuantity": 1.5,
+      "averageEntryPrice": 2987.65,
+      "currentPrice": 3100
     }
   ],
-  "totalRealizedPnl": 5000,
-  "totalUnrealizedPnl": 6000,
-  "netPnl": 11000
+  "totalRealizedPnl": 3.02,
+  "totalUnrealizedPnl": 168.53,
+  "netPnl": 171.55
 }
 ```
 
@@ -679,9 +607,9 @@ Update market prices for multiple symbols atomically.
 ```json
 {
   "prices": {
-    "BTC": 45000,
-    "ETH": 3000,
-    "SOL": 100
+    "BTC": 45678.912345,
+    "ETH": 3100.25,
+    "SOL": 95.123456
   }
 }
 ```
@@ -692,9 +620,9 @@ Update market prices for multiple symbols atomically.
   "message": "Market prices updated",
   "updatedSymbols": ["BTC", "ETH", "SOL"],
   "prices": {
-    "BTC": 45000,
-    "ETH": 3000,
-    "SOL": 100
+    "BTC": 45678.912345,
+    "ETH": 3100.25,
+    "SOL": 95.123456
   }
 }
 ```
@@ -764,7 +692,7 @@ npm run test:cov                # Generates coverage/lcov-report/index.html
 
 ## Performance
 
-**MVP Throughput**: 189 req/s sustained @ sub-10ms p99 latency (in-memory, single machine)
+189 req/s sustained, sub-10ms p99 latency (in-memory).
 
 ### Complexity & Latency
 
@@ -779,15 +707,13 @@ npm run test:cov                # Generates coverage/lcov-report/index.html
 
 ### Load Test Results
 
-**Environment**: MacBook M1/M2 (8-core, 16GB), Node.js v18+, 30s sustained load
-
 | Endpoint | p50 | p95 | p99 |
 |----------|-----|-----|-----|
 | POST /trades | 1.71ms | 3.57ms | 7.19ms |
 | GET /positions | 1.34ms | 3.15ms | 6.65ms |
 | GET /pnl | 1.45ms | 3.55ms | 6.41ms |
 
-**Cache**: P&L aggregates maintain O(1) performance (1.79ms avg) vs O(n) without caching.
+**Cache impact**: P&L aggregates = O(1) performance.
 
 ## Quick Start
 
@@ -799,7 +725,7 @@ npm run start:dev  # http://localhost:3000
 # 2. Initialize with live prices from CoinGecko
 ./init-prices.sh
 
-# 3. Test the API
+# 3. Test the API with high-precision decimals
 curl -X POST http://localhost:3000/portfolio/trades \
   -H "Content-Type: application/json" \
   -d '{
@@ -807,9 +733,22 @@ curl -X POST http://localhost:3000/portfolio/trades \
     "orderId": "order-001", 
     "symbol": "BTC",
     "side": "buy",
-    "price": 40000,
-    "quantity": 1,
+    "price": 43234.567891,
+    "quantity": 0.00123456,
     "executionTimestamp": "2024-01-15T10:00:00Z"
+  }'
+
+# Clean decimal example
+curl -X POST http://localhost:3000/portfolio/trades \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tradeId": "trade-002",
+    "orderId": "order-001", 
+    "symbol": "ETH",
+    "side": "buy",
+    "price": 2987.65,
+    "quantity": 1.5,
+    "executionTimestamp": "2024-01-15T10:05:00Z"
   }'
 
 # Check portfolio
@@ -820,12 +759,6 @@ curl http://localhost:3000/portfolio/pnl
 ```
 
 ## Docker Deployment
-
-**Multi-stage Production Build**: Dockerfile with builder stage (dependencies + compilation) + production stage (runtime only).
-
-**Health Monitoring**: Built-in healthcheck probing `/health` endpoint every 10 seconds.
-
-**Performance**: 192 req/s throughput with ~5ms added latency vs native (~3.19ms avg write, ~2.73ms avg read).
 
 ### Docker Commands
 
@@ -890,8 +823,6 @@ docker-compose down
 
 ## Production Considerations
 
-**Current MVP**: 189 req/s sustained @ sub-10ms p99 latency (in-memory, single machine)
-
 ### Scaling Strategy
 
 | Component | Technology | Purpose | Expected Throughput |
@@ -904,8 +835,6 @@ docker-compose down
 | **Sharding** | User-based | Hash `user_id` to 4 DB shards | 4x capacity, no cross-shard joins |
 
 ### Architecture Summary
-
-**Event-Driven Flow**:
 
 ```mermaid
 flowchart LR
@@ -921,70 +850,49 @@ flowchart LR
     Workers --> Cache
 ```
 
-**Design Choices**:
-- Redis for caching, streaming, and rate limiting
-- Idempotency via DB unique constraint on `trade_id`
-- Circuit breaker for external price feeds
-- Stateless API for horizontal scaling
-- User-based sharding for linear capacity
+Redis for caching/streaming/rate limiting, idempotency via DB constraint, circuit breaker for price feeds, stateless API, user-based sharding.
 
 **Target**: 10k req/s with 20-30 API servers + 4-shard DB cluster
 
-**Monitoring**: Prometheus metrics for latency (p99), cache hit rate, circuit breaker state, connection pool usage
+---
 
 ## Multi-User Architecture
 
 ### 1. Data Model Changes
 
 Add `user_id` to all entities:
-- **Trade**: `user_id` becomes partition key, `trade_id` unique per user (not global)
-- **Position**: Composite key `(user_id, symbol)` - one position per user+symbol pair
+- **Trade**: `user_id` partition key, `trade_id` unique per user
+- **Position**: Composite key `(user_id, symbol)`
 - **Storage**: Nested maps `Map<user_id, Map<symbol, Position>>`
-
-**Impact**: All lookups require `user_id` - current `positions.get("BTC")` becomes `positions.get(userId).get("BTC")`
 
 ### 2. Database Schema
 
-**TimescaleDB changes**:
-- Trades: Hypertable partitioned by `time` (automatic time-series optimization), composite PK `(user_id, trade_id, time)`
-- Positions: Composite PK `(user_id, symbol)`, index on `user_id`
-- Single DB instance sufficient for MVP (<100k users)
+Trades: Hypertable partitioned by `time`, composite PK `(user_id, trade_id, time)`  
+Positions: Composite PK `(user_id, symbol)`, index on `user_id`
 
 ### 3. API Changes
 
-**Pass `user_id` in request payload**:
-- Add `user_id` field to all API requests (trades, positions, P&L queries)
-- Service layer filters all operations by `user_id`
-- Client responsible for providing correct `user_id`
+Add `user_id` field to all requests. Service layer filters by `user_id`.
 
 ### 4. Caching Strategy
 
-**Cache only aggregated data** (not individual trades/FIFO queues):
-- **Positions**: `user:{userId}:position:{symbol}` - Current holdings per symbol
-- **P&L aggregates**: `user:{userId}:pnl` - Realized/unrealized totals
-- **Prices**: `price:{symbol}` - Shared across all users
-- TTL: 5s + jitter (0-2s) to prevent stampede, invalidate on user's writes
-
-**Why not cache trades/queues**:
-- Millions of trades = TB of Redis memory (expensive)
-- FIFO queues change on every trade (high invalidation churn)
-- Trades rarely re-read after creation (append-only audit log)
-- Cache only hot read paths (positions, P&L), not cold storage (trades)
+Cache aggregates only:
+- **Positions**: `user:{userId}:position:{symbol}`
+- **P&L aggregates**: `user:{userId}:pnl`
+- **Prices**: `price:{symbol}` (shared)
+- TTL: 5s + jitter, invalidate on writes
 
 ### 5. Event Streaming
 
-**Partition by `user_id` to preserve trade order**:
-- Create 4-8 streams: `trade-events:0`, `trade-events:1`, `trade-events:2`, `trade-events:3`
-- Write: Hash `user_id` % 4 → determines stream (same user always → same stream)
-- Read: Each consumer pinned to one stream (4 consumers for 4 streams)
-- Guarantee: Same user_id → same stream → same consumer → ordering preserved
+Partition by `user_id` to preserve order:
+- 4-8 streams: `trade-events:0` through `trade-events:3`
+- Hash `user_id` % 4 → determines stream
+- Each consumer pinned to one stream
+- Same user → same stream → same consumer → order preserved
 
-**Why not single stream**: Consumer groups distribute events round-robin → same user's trades to different workers → order lost
+### 6. Horizontal Scaling
 
-### 6. Horizontal Scaling (Optional - only if >100k users)
-
-**Manual DB sharding by user_id** (application-level routing):
-- Run 4 separate TimescaleDB instances
-- Hash `user_id` % 4 → routes to DB instance (0=DB1, 1=DB2, 2=DB3, 3=DB4)
-- All user data co-located on same instance (no cross-shard joins)
-- Trade-off: Hot users may overload single instance
+Manual DB sharding by `user_id`:
+- 4 separate TimescaleDB instances
+- Hash `user_id` % 4 routes to DB instance
+- User data co-located on same instance
