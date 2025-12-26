@@ -5,8 +5,8 @@ export enum TradeSide {
   SELL = 'sell',
 }
 
-// Trade execution record.
-// System ingests historical trades and updates positions accordingly.
+// Trade execution record with Decimal precision for financial values.
+// System ingests trades and updates positions with exact arithmetic.
 export interface Trade {
   id: string;                 // internal UUID
   tradeId: string;            // external ID from broker (idempotency key)
@@ -14,8 +14,8 @@ export interface Trade {
   userId?: string;            // for multi-user systems
   symbol: string;             // BTC, ETH, etc.
   side: TradeSide;
-  price: Decimal;
-  quantity: Decimal;
+  price: Decimal;             // execution price with 20 sig digits precision
+  quantity: Decimal;          // amount traded with exact precision
   executionTimestamp: Date;
   createdAt?: Date;
 }

@@ -1,18 +1,18 @@
 import Decimal from 'decimal.js';
 
-// Record of realized P&L from a closed position.
-// Created when a sell trade matches FIFO lots.
+// Realized P&L record from closed position with exact decimal arithmetic.
+// Created when sell trade matches FIFO lots.
 export interface RealizedPnlRecord {
   symbol: string;
   quantity: Decimal;
   buyPrice: Decimal;      // from FIFO lot
   sellPrice: Decimal;
-  pnl: Decimal;           // (sellPrice - buyPrice) × quantity
+  pnl: Decimal;           // (sellPrice - buyPrice) × quantity (exact)
   timestamp: Date;
 }
 
-// Pre-computed aggregate of realized P&L for a symbol.
-// Cached for O(1) reads instead of summing all records.
+// Pre-computed aggregate of realized P&L per symbol.
+// Cached for O(1) reads with exact precision.
 export type RealizedPnlAggregate = {
   totalPnl: Decimal;        // sum of all realized P&L
   totalQuantity: Decimal;   // total closed quantity

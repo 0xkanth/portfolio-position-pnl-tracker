@@ -8,8 +8,8 @@ import { MarketPriceService } from '../market-price/market-price.service';
 import Decimal from 'decimal.js';
 import { toDecimal } from '../common/utils/decimal.util';
 
-// Handles trade recording and FIFO matching logic.
-// Storage and pricing delegated to separate services.
+// Trade recording and FIFO matching with Decimal.js precision.
+// All financial calculations use exact decimal arithmetic.
 @Injectable()
 export class PortfolioService {
   constructor(
@@ -18,12 +18,8 @@ export class PortfolioService {
   ) {}
 
   /**
-   * Records a new trade and updates position state.
+   * Records trade and updates position state.
    * Idempotent - duplicate tradeId returns existing record.
-   * 
-   * @param createTradeDto - Trade details from external order execution
-   * @returns Persisted trade entity
-   * @throws BadRequestException if sell quantity exceeds position
    */
   addTrade(createTradeDto: CreateTradeDto): Trade {
     const existingTrade = this.storage.findTradeByTradeId(createTradeDto.tradeId);
@@ -49,11 +45,9 @@ export class PortfolioService {
     return trade;
   }
 
-  /**
-   * Updates position state after trade execution.
-   * Buy: adds to FIFO queue, recalcs avg entry price
-   * Sell: consumes lots via FIFO matching, records realized P&L
-   */
+  // Updates position state after trade execution.
+  // Buy: adds to FIFO queue, recalcs avg entry.
+  // Sell: consumes lots via FIFO, records realized P&L.
   private updatePosition(trade: Trade): void {
     const { symbol, side } = trade;
 
@@ -76,10 +70,7 @@ export class PortfolioService {
     this.storage.savePosition(position);
   }
 
-  /**
-   * Adds buy trade to position's FIFO queue.
-   * Recalculates average entry price across all lots.
-   */
+  // Adds buy to FIFO queue and recalculates average entry price.
   private handleBuy(position: Position, trade: Trade): void {
     position.fifoQueue.push({
       quantity: trade.quantity,
@@ -95,13 +86,8 @@ export class PortfolioService {
     position.averageEntryPrice = totalCost.dividedBy(position.totalQuantity);
   }
 
-  /**
-   * Consumes position lots via FIFO matching.
-   * Records realized P&L for each matched lot.
-   * Supports partial lot consumption.
-   * 
-   * @throws BadRequestException if position quantity insufficient
-   */
+  // Consumes lots via FIFO, records realized P&L per lot.
+  // Supports partial lot consumption.
   private handleSell(position: Position, trade: Trade): void {
     let remainingQuantity = trade.quantity;
 

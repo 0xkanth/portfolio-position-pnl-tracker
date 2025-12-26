@@ -24,41 +24,4 @@ export function toNumber(value: Decimal): number {
   return value.toDecimalPlaces(8).toNumber();
 }
 
-/**
- * Converts Decimal to USD string with 2 decimal places.
- * Used for P&L amounts and portfolio values.
- */
-export function toUSD(value: Decimal): string {
-  return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
-}
 
-/**
- * Safe addition of Decimal values.
- */
-export function add(...values: Decimal[]): Decimal {
-  return values.reduce((sum, val) => sum.plus(val), new Decimal(0));
-}
-
-/**
- * Safe multiplication.
- */
-export function multiply(a: Decimal, b: Decimal): Decimal {
-  return a.times(b);
-}
-
-/**
- * Safe subtraction.
- */
-export function subtract(a: Decimal, b: Decimal): Decimal {
-  return a.minus(b);
-}
-
-/**
- * Safe division with zero check.
- */
-export function divide(a: Decimal, b: Decimal): Decimal {
-  if (b.isZero()) {
-    throw new Error('Division by zero');
-  }
-  return a.dividedBy(b);
-}

@@ -1,14 +1,14 @@
 import Decimal from 'decimal.js';
 
-// FIFO lot - tracks a single buy lot with its cost basis.
+// FIFO lot - tracks buy lot with exact cost basis.
 export interface FifoLot {
   quantity: Decimal;
   price: Decimal;         // cost basis
   tradeId: string;
 }
 
-// Current holdings for a symbol.
-// Maintains FIFO queue for sell matching and cost basis calculation.
+// Current holdings per symbol with Decimal precision.
+// FIFO queue maintains lot-level tracking for accurate P&L.
 export interface Position {
   symbol: string;
   fifoQueue: FifoLot[];        // oldest first

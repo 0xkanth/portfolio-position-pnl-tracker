@@ -6,7 +6,7 @@ import { PortfolioResponseDto } from './dto/portfolio-response.dto';
 import Decimal from 'decimal.js';
 import { toDecimal, toNumber } from '../common/utils/decimal.util';
 
-// Read-only operations for portfolio data.
+// Read-only queries with Decimal precision.
 // CQRS pattern - queries separated from mutations.
 @Injectable()
 export class PortfolioQueryService {
@@ -15,13 +15,8 @@ export class PortfolioQueryService {
     private readonly marketPriceService: MarketPriceService,
   ) {}
 
-  /**
-   * Returns current holdings with unrealized P&L.
-   * Excludes closed positions (totalQuantity = 0).
-   * Uses latest market price or entry price as fallback.
-   * 
-   * @param symbols - Optional filter for specific symbols
-   */
+  // Returns current holdings with unrealized P&L.
+  // Excludes closed positions, uses market price or entry price fallback.
   getPortfolio(symbols?: string[]): PortfolioResponseDto {
     let positions = this.storage.getAllPositions();
     
@@ -52,18 +47,13 @@ export class PortfolioQueryService {
 
     return {
       positions: positionsWithPnl,
-      totalValue: Number(totalValue.toFixed(2)),
-      totalUnrealizedPnl: Number(totalUnrealizedPnl.toFixed(2)),
+      totalValue: parseFloat(totalValue.toFixed(2)),
+      totalUnrealizedPnl: parseFloat(totalUnrealizedPnl.toFixed(2)),
     };
   }
 
-  /**
-   * Calculates realized + unrealized P&L across portfolio.
-   * Realized: cached aggregates from closed trades (O(1) lookup)
-   * Unrealized: current positions vs market price
-   * 
-   * @param symbols - Optional filter for specific symbols
-   */
+  // Calculates realized + unrealized P&L across portfolio.
+  // Realized: O(1) cached aggregates. Unrealized: current positions vs market.
   getPnl(symbols?: string[]): PnlResponseDto {
     const realizedBySymbol = this.storage.getRealizedPnlAggregates();
     let realizedPnl = Array.from(realizedBySymbol.entries()).map(([symbol, data]) => ({
@@ -107,9 +97,9 @@ export class PortfolioQueryService {
     return {
       realizedPnl,
       unrealizedPnl,
-      totalRealizedPnl: Number(totalRealizedPnl.toFixed(2)),
-      totalUnrealizedPnl: Number(totalUnrealizedPnl.toFixed(2)),
-      netPnl: Number((totalRealizedPnl + totalUnrealizedPnl).toFixed(2)),
+      totalRealizedPnl: parseFloat(totalRealizedPnl.toFixed(2)),
+      totalUnrealizedPnl: parseFloat(totalUnrealizedPnl.toFixed(2)),
+      netPnl: parseFloat((totalRealizedPnl + totalUnrealizedPnl).toFixed(2)),
     };
   }
 

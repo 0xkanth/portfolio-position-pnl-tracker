@@ -4,11 +4,9 @@ import { Position, FifoLot } from './entities/position.entity';
 import { RealizedPnlRecord, RealizedPnlAggregate } from './entities/realized-pnl-record.entity';
 import Decimal from 'decimal.js';
 
-/**
- * In-memory storage layer with O(1) lookups.
- * Trade deduplication via tradeId index.
- * Realized P&L cached in aggregates for fast reads.
- */
+// In-memory storage with O(1) lookups and exact Decimal arithmetic.
+// Trade deduplication via tradeId index.
+// Realized P&L cached in aggregates for fast reads.
 @Injectable()
 export class PortfolioStorageService {
   private trades: Trade[] = [];
@@ -59,10 +57,7 @@ export class PortfolioStorageService {
     this.positions.delete(symbol);
   }
 
-  /**
-   * Stores realized P&L record and updates aggregate cache.
-   * Maintains O(1) reads by pre-aggregating per symbol.
-   */
+  // Stores P&L record and updates aggregate cache for O(1) reads.
   savePnlRecord(record: RealizedPnlRecord): void {
     if (!this.pnlRecords.has(record.symbol)) {
       this.pnlRecords.set(record.symbol, []);
