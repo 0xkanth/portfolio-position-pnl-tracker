@@ -857,10 +857,9 @@ Add `user_id` to all entities:
 ### 2. Database Schema
 
 **TimescaleDB changes**:
-- Trades: Hypertable partitioned by `time` + `user_id`, composite PK `(user_id, trade_id, time)`
+- Trades: Hypertable partitioned by `time` (automatic time-series optimization), composite PK `(user_id, trade_id, time)`
 - Positions: Composite PK `(user_id, symbol)`, index on `user_id`
-- Sharding: Consistent hash on `user_id` → 4 shards (0-25%, 25-50%, 50-75%, 75-100%)
-- All user data co-located on same shard (no cross-shard joins)
+- Single DB instance sufficient for MVP (<100k users)
 
 ### 3. API Changes
 
@@ -893,14 +892,10 @@ Add `user_id` to all entities:
 
 **Why not single stream**: Consumer groups distribute events round-robin → same user's trades to different workers → order lost
 
-### 6. Rate Limiting
+### 6. Horizontal Scaling (Optional - only if >100k users)
 
-**Per-user + global limits**: 100 req/min per user, 10k req/min global
-
-### 7. Sharding Strategy
-
-**Consistent hashing by user_id**:
-- Hash `user_id` → 0-100
-- Route to DB shard: 0-25 → Shard1, 25-50 → Shard2, etc.
-- **Benefit**: All user data co-located (no cross-shard joins)
-- **Trade-off**: Hot users may overload single shard (monitor and split if needed)
+**Manual DB sharding by user_id** (application-level routing):
+- Run 4 separate TimescaleDB instances
+- Hash `user_id` % 4 → routes to DB instance (0=DB1, 1=DB2, 2=DB3, 3=DB4)
+- All user data co-located on same instance (no cross-shard joins)
+- Trade-off: Hot users may overload single instance
