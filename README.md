@@ -450,7 +450,7 @@ sequenceDiagram
 **Formula** (per matched lot):
 
 $$
-\text{Realized P\&L}_{\text{lot}} = (\text{Sell Price} - \text{Lot Buy Price}) \times \text{Lot Quantity}
+\text{Realized PnL}_{\text{lot}} = (\text{Sell Price} - \text{Lot Buy Price}) \times \text{Lot Quantity}
 $$
 
 **Example from Data Flow**:
@@ -479,7 +479,7 @@ Selling 4 BTC @ \$45,000 matches against FIFO queue [2 BTC @ \$40k, 3 BTC @ \$42
 **Formula** (per position):
 
 $$
-\text{Unrealized P\&L} = (\text{Current Market Price} - \text{Average Entry Price}) \times \text{Total Quantity Held}
+\text{Unrealized PnL} = (\text{Current Market Price} - \text{Average Entry Price}) \times \text{Total Quantity Held}
 $$
 
 **Example from Data Flow**:
@@ -487,13 +487,13 @@ $$
 After selling 4 BTC, you hold 1 BTC with average entry \$42,000. Current price: \$44,000:
 
 $$
-\text{Unrealized P\&L} = (44{,}000 - 42{,}000) \times 1 = \$2{,}000
+\text{Unrealized PnL} = (44{,}000 - 42{,}000) \times 1 = \$2{,}000
 $$
 
 If price drops to \$41,000, your unrealized becomes:
 
 $$
-\text{Unrealized P\&L} = (41{,}000 - 42{,}000) \times 1 = -\$1{,}000 \text{ (loss)}
+\text{Unrealized PnL} = (41{,}000 - 42{,}000) \times 1 = -\$1{,}000 \text{ (loss)}
 $$
 
 **Key Properties**:
@@ -547,7 +547,7 @@ $$
 **Formula**:
 
 $$
-\text{Net P\&L} = \text{Total Realized P\&L} + \text{Total Unrealized P\&L}
+\text{Net PnL} = \text{Total Realized PnL} + \text{Total Unrealized PnL}
 $$
 
 **Example from Data Flow**:
@@ -555,7 +555,7 @@ $$
 After all trades:
 - Realized (locked in): \$16,000
 - Unrealized (1 BTC held @ \$44k with \$42k cost): \$2,000
-- **Net P&L**: $\$16{,}000 + \$2{,}000 = \$18{,}000$
+- **Net PnL**: $\$16{,}000 + \$2{,}000 = \$18{,}000$
 
 This represents your total profit if you closed all positions at current market prices.
 
