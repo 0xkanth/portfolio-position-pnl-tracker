@@ -292,7 +292,7 @@ Returns complete P&L breakdown:
 | `GET /positions` | 1.34ms | 3.15ms | 6.65ms | 15.71ms |
 | `GET /pnl` | 1.45ms | 3.55ms | 6.41ms | 14.83ms |
 
-**Key Insight**: With 2,130 P&L records generated during test, `GET /pnl` maintains **constant O(1) latency** (~1.79ms avg) due to cached aggregates. Without caching, latency would scale linearly to ~100ms+ with record growth.
+**Cache Impact**: With 2,130 P&L records generated, `GET /pnl` maintains O(1) latency (1.79ms avg) via cached aggregates. Without caching, latency scales linearly with record count.
 
 ---
 
@@ -485,7 +485,11 @@ Base URL: `http://localhost:3000`
 
 ### Trade Management
 
-#### `POST http://localhost:3000/portfolio/trades`
+#### Add Trade
+
+**POST**
+
+http://localhost:3000/portfolio/trades
 
 Record a new trade with FIFO accounting. Idempotent via `tradeId`.
 
@@ -518,13 +522,22 @@ Record a new trade with FIFO accounting. Idempotent via `tradeId`.
 
 ### Portfolio Queries
 
-#### `GET http://localhost:3000/portfolio/positions`
+#### Get Portfolio Positions
+
+**GET**
+
+http://localhost:3000/portfolio/positions
 
 Returns current holdings with unrealized P&L. Without parameters, returns ALL symbols.
 
 **Query Parameters**:
-- `symbol` (optional): Filter by single symbol (e.g., `?symbol=BTC`)
-- `symbols` (optional): Filter by comma-separated list (e.g., `?symbols=BTC,ETH`)
+- `symbol` (optional): Filter by single symbol
+- `symbols` (optional): Filter by comma-separated list
+
+**Example URLs**:
+- All symbols: http://localhost:3000/portfolio/positions
+- Single symbol: http://localhost:3000/portfolio/positions?symbol=BTC
+- Multiple symbols: http://localhost:3000/portfolio/positions?symbols=BTC,ETH
 
 **Response** `200 OK` (all symbols):
 ```json
@@ -578,12 +591,21 @@ Returns current holdings with unrealized P&L. Without parameters, returns ALL sy
 }
 ```
 
-#### `GET http://localhost:3000/portfolio/pnl`
+#### Get P&L Breakdown
+
+**GET**
+
+http://localhost:3000/portfolio/pnl
 
 Complete P&L breakdown with realized (locked-in) and unrealized (mark-to-market). Without parameters, returns ALL symbols.
 
 **Query Parameters**:
-- `symbols` (optional): Comma-separated list to filter (e.g., `?symbols=BTC,ETH` or `?symbols=SOL`)
+- `symbols` (optional): Comma-separated list to filter
+
+**Example URLs**:
+- All symbols: http://localhost:3000/portfolio/pnl
+- Filtered: http://localhost:3000/portfolio/pnl?symbols=BTC,ETH
+- Single symbol: http://localhost:3000/portfolio/pnl?symbols=SOL
 
 **Response** `200 OK` (all symbols):
 ```json
@@ -658,7 +680,11 @@ Complete P&L breakdown with realized (locked-in) and unrealized (mark-to-market)
 
 ### Market Data
 
-#### `POST http://localhost:3000/portfolio/market-prices/bulk`
+#### Update Market Prices
+
+**POST**
+
+http://localhost:3000/portfolio/market-prices/bulk
 
 Update market prices for multiple symbols atomically.
 
@@ -690,7 +716,11 @@ Update market prices for multiple symbols atomically.
 
 ### Testing Utilities
 
-#### `POST http://localhost:3000/portfolio/reset`
+#### Reset Portfolio
+
+**POST**
+
+http://localhost:3000/portfolio/reset
 
 Clear all data (testing only).
 
@@ -844,126 +874,49 @@ docker-compose up -d && sleep 3
 docker-compose down
 ```
 
-## Production Path
+## Production Considerations
 
-**Current State**: In-memory MVP achieving **189 req/s @ <10ms p99 latency** on 8-core machine
+**Current MVP**: 189 req/s sustained @ sub-10ms p99 latency (in-memory, single machine)
 
-**Measured Capacity** (MacBook 8-core, 16GB RAM):
-- Sustained throughput: 189 req/s (150 target load)
-- Write latency p99: 7.19ms
-- Read latency p99: 6.41ms
-- Memory footprint: ~50MB with 2,130 trades
+### Scaling Strategy
 
-**Phase 1 - Database + Caching**: TimescaleDB + Redis
-- **TimescaleDB**: Trades/P&L hypertables with compression, continuous aggregates
-- **Redis**: 
-  - Cache layer for positions/P&L (TTL 5s, 95%+ hit rate)
-  - Session store for JWT tokens
-- Expected: 500-1000 req/s with cache, connection pooling (10-50)
+| Component | Technology | Purpose | Expected Throughput |
+|-----------|------------|---------|--------------------|
+| **Database** | TimescaleDB | Time-series trades/P&L with compression | 500-1000 req/s with connection pooling |
+| **Cache** | Redis | Positions/P&L aggregates (TTL 5s) | 95%+ cache hit rate |
+| **Event Streaming** | Redis Streams | Async FIFO processing, replay capability | Decouples writes from processing |
+| **Rate Limiting** | Redis Sliding Window | 1000 req/min per user, 10k/min global | Protects from abuse |
+| **API Servers** | Stateless Node.js | Horizontal scaling behind load balancer | 300-500 req/s per instance |
+| **Sharding** | User-based | Hash `user_id` to 4 DB shards | 4x capacity, no cross-shard joins |
 
-**Phase 2 - Event Streaming**: Redis Streams (Kafka alternative)
-- **Why Redis Streams over Kafka**:
-  - Simpler ops (single Redis cluster vs Kafka cluster + KRaft quorum)
-  - Sub-millisecond latency (Kafka: 5-10ms, Redis: <1ms)
-  - Sufficient for <100k trades/sec (Kafka needed for >1M/sec)
-  - Consumer groups for parallel processing, persistence with AOF/RDB
+### Architecture Summary
 
-- **Architecture**:
-  ```
-  API → Redis Stream (trade-events) → Consumer Group → Process FIFO → TimescaleDB
-                                    ↓
-                              Dead Letter Queue (failed trades)
-  ```
-- **Benefits**: Decouple writes (instant 201 response), at-least-once delivery, replay capability
-
-**Phase 3 - Scaling + Reliability**:
-- **Rate Limiting**: Redis sliding window (1000 req/min per user, 10k/min global)
-- **Circuit Breaker**: Hystrix pattern for external APIs (price feeds, exchanges)
-  - Open after 50% errors in 10s window
-  - Half-open retry after 30s
-  - Fallback: cached prices or circuit open error
-- **Horizontal Scaling**: Stateless API servers behind load balancer
-  - Sticky sessions not needed (Redis for shared state)
-  - Auto-scale: CPU >70% → add pod, <30% → remove pod
-- **Database Sharding**: Shard by `user_id` hash (consistent hashing)
-  - 0-25% hash → DB1, 25-50% → DB2, 50-75% → DB3, 75-100% → DB4
-  - Positions/trades co-located per user (no cross-shard joins)
-
-**Phase 4 - Auth + Security**: JWT + API keys
-- JWT validation (~1-2ms per request)
-- API key rate limits per tier (Free: 100/min, Pro: 1000/min, Enterprise: unlimited)
-
-**Phase 5 - Precision**: Replace `number` with `Decimal.js` for >$10M portfolios (~0.5-1ms overhead)
-
-**Production Architecture**:
+**Event-Driven Flow**:
 
 ```mermaid
-graph TB
-    Users[Users]
-    LB[Load Balancer]
+flowchart LR
+    API[API POST /trades]
+    Stream[Redis Stream<br/>trade-events]
+    Workers[Consumer Workers<br/>FIFO processing]
+    DB[TimescaleDB<br/>persistence]
+    Cache[Redis Cache<br/>aggregates]
     
-    subgraph API[API Servers - Stateless]
-        API1[Server 1]
-        API2[Server 2]
-        APIN[Server N]
-    end
-    
-    subgraph Redis[Redis Cluster]
-        Cache[Cache]
-        Stream[Streams]
-        RL[Rate Limit]
-    end
-    
-    subgraph Workers[Consumer Workers]
-        W1[Worker 1]
-        W2[Worker 2]
-        DLQ[Failed Trades]
-    end
-    
-    subgraph DB[TimescaleDB - Sharded by user_id]
-        DB1[Shard 1: 0-25%]
-        DB2[Shard 2: 25-50%]
-        DB3[Shard 3: 50-75%]
-        DB4[Shard 4: 75-100%]
-    end
-    
-    PriceFeed[Price Feeds<br/>Binance/Coinbase]
-    CB[Circuit Breaker]
-    
-    Users --> LB --> API1 & API2 & APIN
-    
-    API1 & API2 & APIN --> RL
-    API1 & API2 & APIN --> Cache
-    API1 & API2 & APIN --> Stream
-    
-    Stream --> W1 & W2
-    W1 & W2 --> Cache
-    W1 & W2 --> DB1 & DB2 & DB3 & DB4
-    W1 & W2 -.-> DLQ
-    
-    Cache -.-> DB1 & DB2 & DB3 & DB4
-    
-    API1 & API2 & APIN --> CB
-    CB --> PriceFeed
+    API --> Stream
+    Stream --> Workers
+    Workers --> DB
+    Workers --> Cache
 ```
 
-**Key Decisions**:
-- **Redis**: Single cluster for cache, streams, rate limiting
-- **Event-driven**: Writes go to Redis Streams → workers process async → DB persistence
-- **Idempotency**: DB unique constraint on `trade_id` + consumer group ordering (no distributed locks needed)
-- **Sharding**: TimescaleDB sharded by `user_id` hash (4 shards = 4x capacity)
-- **Circuit breaker**: Fail fast on external API timeouts (price feeds)
-- **Stateless API**: Horizontal scaling, no sticky sessions
+**Key Design Choices**:
+- Redis for caching, streaming, and rate limiting (single cluster)
+- Idempotency via DB unique constraint on `trade_id`
+- Circuit breaker for external price feeds (fail fast)
+- Stateless API for horizontal scaling
+- User-based sharding for linear capacity growth
 
-**Capacity Planning** (per server):
-- Current: 189 req/s (in-memory)
-- With Redis cache: 500-1000 req/s (95%+ cache hits on reads)
-- With DB + streams: 300-500 req/s sustained
-- Target: 10k req/s → 20-30 servers + sharded DB cluster
+**Capacity Target**: 10k req/s with 20-30 API servers + 4-shard DB cluster
 
-**Monitoring**: Prometheus + Grafana
-- Metrics: `trades_processed_total`, `redis_cache_hit_rate`, `circuit_breaker_state`, `db_connection_pool_usage`, `request_latency_p99`
-- Alerts: P99 latency >50ms, cache hit rate <90%, circuit breaker open, DB pool >80%
+**Monitoring**: Prometheus metrics for latency (p99), cache hit rate, circuit breaker state, connection pool usage
 
 ## Multi-User Architecture
 
